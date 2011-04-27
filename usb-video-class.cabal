@@ -1,0 +1,44 @@
+name:          usb-video-class
+version:       0.0.0.0
+cabal-version: >=1.6
+build-type:    Simple
+license:       BSD3
+license-file:  LICENSE
+copyright:     2011 John Obbele <john.obbele@gmail.com>
+author:        John Obbele <john.obbele@gmail.com>
+maintainer:    John Obbele <john.obbele@gmail.com>
+bug-reports:   John Obbele <john.obbele@gmail.com>
+stability:     experimental
+category:      System,USB
+synopsis:      Communicate with USB Video Class devices
+description:   A small demo to showcase asynchronous transfers.
+               .
+               For further references, you should consult:
+               .
+               * The USB Video Class v1.0a specification:
+                 <http://www.quickcamteam.net/archive/USB_Video_Class_1_0a.zip>
+               .
+               * The USB Video Class v1.1 specification:
+                 <http://www.usb.org/developers/devclass_docs/USB_Video_Class_1_1.zip>
+
+source-repository head
+  Type:     git
+  Location: git://github.com/obbele/usb-video-class.git
+
+executable test
+  GHC-Options: -Wall
+  GHC-Options: -fno-warn-unused-do-bind
+  GHC-Options: -threaded
+
+  build-depends: base                 >= 4     && < 4.4
+               , base-unicode-symbols >= 0.1.1 && < 0.3
+               , bytestring           >= 0.9   && < 0.10
+               , text                 >= 0.5   && < 0.12
+               , usb                  >= 1.0
+               , binary               >= 0.5
+               , binary-strict        >= 0.4.8
+
+  main-is:       Main.hs
+  other-modules: System.USB.UVC.Internals
+               , Utils
+               , ExtraUtils

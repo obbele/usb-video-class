@@ -1,0 +1,51 @@
+What is working ?
+=================
+
+1. UVC Video Control and Video Streaming descriptors are correctly parsed.
+   (but this work could benefit from the use of clever binary
+   (de)serialization libraries).
+
+2. Video probe and commit control seems to work. The device answers to
+   the request and accept the control commit.
+
+3. The (read) Iso-packets are sent and received without noticeable
+   system memory or cpu overhead
+
+What is not working ?
+=====================
+
+1. The import from System.USB.IO.Asynchronous conflict with System.USB
+   (readControlExact and writeControlExact).
+
+2. The (read) Iso-packets are received empty. This is not a problem with
+   the libusb bindings, but with the UVC device initialization. Maybe
+   I'm missing some trigger or control initialization.
+
+What could be improve ?
+=======================
+
+I'm really needing a good binary serialization and deserialization
+library. Something like Peter Seibel monkeylib-binary-data. The process
+in Haskell is really painful, one has to i) define the Haskell algebraic
+data types/representations; ii) write un-marshaller to convert every
+entitiy from [Word8] or (unsigned char \*) stream to their Haskell
+counterparts; iii) do the same thing to marshal data from Haskell back
+to C/ByteString/Whatever.
+
+I'm almost missing the OO inheritance and polymorphism stuff which is a
+good fit for this type of hierarchical descriptors as those described in
+the USB specification.
+
+Perhaps, should I look at a 'Storable' class but for converting back and
+forth to ByteString.
+
+About the video data stream
+===========================
+
+Possible solution to empty video data stream are:
+
+1. check the status endpoint.
+
+2. check the vidoe control settings.
+
+3. check the isopacket timing (delay between each submission).
