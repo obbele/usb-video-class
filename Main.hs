@@ -12,7 +12,7 @@ import Data.Bool.Unicode           -- ∧ ∨ ¬
 import Data.Eq.Unicode             -- ≡ ≠
 --import Data.Foldable.Unicode       -- ∈ ∋ ∉ ∌
 import Data.Function.Unicode       -- ∘
---import Data.List.Unicode           -- ⧺ ∪ ∖ ∆ ∩
+import Data.List.Unicode           -- ⧺ ∪ ∖ ∆ ∩
 --import Data.Monoid.Unicode         -- ∅ ⊕
 --import Data.Ord.Unicode            -- ≤ ≥ ≮ ≯
 --import Prelude.Unicode             -- π ÷ ⊥ ⋅ ∈
@@ -57,9 +57,10 @@ catchCommonUSBException io =
 
 findVideoDevice ∷ IO Device
 findVideoDevice = newCtx ≫= getDevices ≫= \devices →
-    case find isMyVideoDevice devices of
+    case find hasVideoInterface devices of
          Nothing → error "Video device not found !"
-         Just d  → return d
+         Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
+                      return d
   where
     --predicate := isMyVideoDevice isMy2ndVideoDevice hasVideoInterface
 
