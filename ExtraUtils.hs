@@ -1,4 +1,6 @@
 {-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
+{-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module ExtraUtils where
 
@@ -8,19 +10,25 @@ import Prelude.Unicode             ( (≡), (∘) )
 import qualified Data.Text as T
 
 import System.USB
-import Utils ( decodeBCD, bits )
+import Utils         ( decodeBCD, bits )
 
-import Data.Word
-import Data.Bits
-import Data.List ( find )
+import Data.Data     ( Data )
+import Data.Typeable ( Typeable )
+import Data.Word     ( Word8, Word16 )
+import Data.Bits     ( Bits, testBit, setBit )
+import Data.List     ( find )
 
-unmarshalBitmask ∷ Bits α ⇒ [(Int, a)] → α → [a]
-unmarshalBitmask table value = foldr test [] table
+type BitMaskTable a = [(Int, a)]
+newtype BitMask a   = BitMask { unBitMask ∷ [a] }
+    deriving (Eq, Show, Data, Typeable)
+
+unmarshalBitmask ∷ Bits α ⇒ BitMaskTable a → α → BitMask a
+unmarshalBitmask table value = BitMask $ foldr test [] table
   where test (i, ctrl) acc | value `testBit` i = (ctrl:acc)
                            | otherwise         = acc
 
-marshalBitmask ∷ (Eq a, Bits α) ⇒ [(Int, a)] → [a] → α
-marshalBitmask table xs = foldr test 0 xs
+marshalBitmask ∷ (Eq a, Bits α) ⇒ BitMaskTable a → BitMask a → α
+marshalBitmask table (BitMask xs) = foldr test 0 xs
   where test ctrl acc = case find (\(_,a) → a ≡ ctrl) table of
                Just (i,_) → acc `setBit` i
                _          → acc

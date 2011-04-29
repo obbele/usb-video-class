@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-} -- where are they coming from ?
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
 {-# LANGUAGE CPP #-}
@@ -10,15 +11,16 @@
 module System.USB.UVC.Internals where
 
 -- Qualified imports.
-import qualified Data.ByteString        as B
-import qualified Data.ByteString.Lazy   as BL
-import qualified Control.Exception      as E
-import qualified Data.Binary.Strict.Get as Get
-import qualified Data.Binary.Put        as Put
+import qualified Data.ByteString    as B
+import qualified Control.Exception  as E
+import qualified Data.Serialize.Get as Get
+import qualified Data.Serialize.Put as Put
+import qualified Data.Serialize     as Serialize
 
 -- Private libraries.
 import Utils               ( bits, genToEnum, genFromEnum )
 import ExtraUtils          ( unmarshalBitmask, marshalBitmask
+                           , BitMask(..), BitMaskTable
                            , unmarshalStrIx, unmarshalReleaseNumber
                            , unmarshalEndpointAddress
                            , getUSBString )
@@ -42,7 +44,7 @@ import Text.Printf         ( printf )
 
 import Control.Monad.Unicode       ( (≫=) )
 import Data.List.Unicode           ( (⧺) )
-import Prelude.Unicode             ( (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
+import Prelude.Unicode             ( (⊥), (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
 
 {----------------------------------------------------------------------
 -- Boring stuff.
@@ -266,7 +268,7 @@ isIsoEndpoint ep = case endpointAttribs ep of
 type SourceClockReference = (Word32, Word16)
 
 data StreamHeader = StreamHeader !Int
-                                 ![StreamHeaderFlag]
+                                 !(BitMask StreamHeaderFlag)
                                  !(Maybe Word32)
                                  !(Maybe SourceClockReference)
     deriving (Eq, Show, Data, Typeable)
@@ -282,7 +284,11 @@ data StreamHeaderFlag
    | EndOfHeader
    deriving (Eq, Show, Data, Typeable)
 
-stream_header_bitmask ∷ [(Int, StreamHeaderFlag)]
+instance Serialize.Serialize (BitMask StreamHeaderFlag) where
+    put = Put.putWord8 ∘ marshalBitmask stream_header_bitmask
+    get = unmarshalBFH `fmap` Get.getWord8
+
+stream_header_bitmask ∷ BitMaskTable StreamHeaderFlag
 stream_header_bitmask =
     [ (0, OddFrame) -- yes, this is completely arbitrary.
     , (1, EndOfFrame)
@@ -294,23 +300,23 @@ stream_header_bitmask =
     , (7, EndOfHeader)
     ]
 
-unmarshalBFH ∷ Word8 → [StreamHeaderFlag]
+unmarshalBFH ∷ Word8 → BitMask StreamHeaderFlag
 unmarshalBFH w8 =
-    let flags = unmarshalBitmask stream_header_bitmask w8
+    let mask@(BitMask xs) = unmarshalBitmask stream_header_bitmask w8
     -- If OddFrame is not present, add EvenFrame to the set.
-    in if OddFrame ∈ flags
-          then flags
-          else EvenFrame : flags
+    in if OddFrame ∈ xs
+          then mask
+          else BitMask (EvenFrame:xs)
 
 -- See UVC specifications 1.0a, Table 2.2.
 parseStreamHeader ∷ Get.Get StreamHeader
 parseStreamHeader = do
     bLength ← fromIntegral `fmap` Get.getWord8
-    bfh ← unmarshalBFH `fmap` Get.getWord8
-    mPTS ← if PTS ∈ bfh
+    bfh@(BitMask xs) ← unmarshalBFH `fmap` Get.getWord8
+    mPTS ← if PTS ∈ xs
                 then Just `fmap` Get.getWord32le
                 else return Nothing
-    mSCR ← if SCR ∈ bfh
+    mSCR ← if SCR ∈ xs
                 then do x0 ← Get.getWord32le
                         x1 ← Get.getWord16le
                         return $ Just (x0, x1)
@@ -318,11 +324,17 @@ parseStreamHeader = do
 
     return $ StreamHeader bLength bfh mPTS mSCR
 
-extractStreamHeader ∷ B.ByteString → StreamHeader
-extractStreamHeader bs =
-    let (Right h, _) = Get.runGet parseStreamHeader (B.take 12 bs)
-    in h
+instance Serialize.Serialize StreamHeader where
+    put = (⊥)
+    get = parseStreamHeader
 
+extractStreamHeader ∷ B.ByteString → StreamHeader
+extractStreamHeader bs = runGetExact (B.take 12 bs)
+
+runGetExact ∷ Serialize.Serialize a ⇒ B.ByteString → a
+runGetExact bs =
+    let Right a = Get.runGet Serialize.get bs
+    in a
 
 {----------------------------------------------------------------------
 -- Configuring the video device.
@@ -426,7 +438,7 @@ simplestProbeCommitControl video =
         frame = minimumBy (compare `on` fuMinBitRate) frames
 
     in ProbeCommitControl
-        { pcHint                   = [HintFrameInterval]
+        { pcHint                   = BitMask [HintFrameInterval]
         , pcFormatIndex            = fuFormatIndex format
         , pcFrameIndex             = fuFrameIndex frame
         , pcFrameInterval          = fuDefaultFrameInterval frame
@@ -524,7 +536,7 @@ negotiatePCControl video devh ctrl0 = do
 -- See UVC specifications 1.0a, Section 4.3.1.1 and Table 4-46.
 
 data ProbeCommitControl = ProbeCommitControl
-    { pcHint                   ∷ ![ProbeHint]
+    { pcHint                   ∷ !(BitMask ProbeHint)
     , pcFormatIndex            ∷ !Word8
     , pcFrameIndex             ∷ !Word8
     , pcFrameInterval          ∷ !Int
@@ -554,27 +566,22 @@ probe_hint_bitmask =
    , (4,  HintCompWindowSize)
    ]
 
-unmarshalProbeHint ∷ Bits α ⇒ α → [ProbeHint]
+unmarshalProbeHint ∷ Bits α ⇒ α → BitMask ProbeHint
 unmarshalProbeHint = unmarshalBitmask probe_hint_bitmask
 
-marshalProbeHint ∷ [ProbeHint] → Word16
+marshalProbeHint ∷ BitMask ProbeHint → Word16
 marshalProbeHint = marshalBitmask probe_hint_bitmask
-
-lazyToStrict ∷ BL.ByteString → B.ByteString
-lazyToStrict = B.concat ∘ BL.toChunks
 
 extractPCControl ∷ ReleaseNumber → B.ByteString → Maybe ProbeCommitControl
 extractPCControl release bs =
     case Get.runGet (parseVideoProbeCommitControl release) bs of
-         (Left _, _)  → Nothing
-         (Right x, _) → Just x
+         Left _  → Nothing
+         Right x → Just x
 
 -- What ? "intract" is not an english word ? but who cares !
 intractPCControl ∷ ReleaseNumber → ProbeCommitControl → B.ByteString
 intractPCControl release ctrl =
-    lazyToStrict $
-        Put.runPut $
-            unparseVideoProbeCommitControl release ctrl
+    Put.runPut $ unparseVideoProbeCommitControl release ctrl
 
 unparseVideoProbeCommitControl ∷ ReleaseNumber → ProbeCommitControl → Put.Put
 unparseVideoProbeCommitControl release value = do
@@ -780,7 +787,7 @@ instance Show VideoDevice where
         ppunit   = \p → printf " ----- ProcessingUnit[%d]\n\\
                                \%s"
                                (puId p)
-                               (concatMap puctrl ∘ puControls $ p)
+                               (concatMap puctrl ∘ unBitMask ∘ puControls $ p)
         puctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing the camera terminal.
@@ -791,7 +798,7 @@ instance Show VideoDevice where
         pcamera  = \c → printf " ----- CameraTerminal[%d]\n\\
                                \%s"
                                (ctId c)
-                               (concatMap pcctrl ∘ ctControls $ c)
+                               (concatMap pcctrl ∘ unBitMask ∘ ctControls $ c)
         pcctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing streaming interfaces.
@@ -814,7 +821,7 @@ instance Show VideoDevice where
                                (fuFormatIndex f)
                                (show $ fuFormat f)
                                (fuBitsPerPixel f)
-                               (show $ fuInterlaceFlags f)
+                               (show ∘ unBitMask $ fuInterlaceFlags f)
 
         -- Pretty printing uncompressed frames.
         frames   ∷ VideoStreamingDesc → String
@@ -929,11 +936,12 @@ getVideoDevice dev = do
 -- been read, and flush the buffer when needed.
 safeBoundParser ∷ Int → Get.Get a → Get.Get a
 safeBoundParser size parser = do
-    start  ← Get.bytesRead
+    start  ← Get.remaining
     result ← parser
-    end    ← Get.bytesRead
+    end    ← Get.remaining
 
-    let remainingBytes = size - end + start
+    --FIXME: let remainingBytes = size - end + start
+    let remainingBytes = size - (start - end)
     if remainingBytes ≠ 0
        then Get.skip remainingBytes
        else return ()
@@ -981,8 +989,8 @@ data ComponentDesc
        { puId                      ∷ !ComponentID
        , puSourceID                ∷ !ComponentID
        , puMaxMultiplier           ∷ !Int
-       , puControls                ∷ ![ProcessingControl]
-       , puVideoStandards          ∷ ![VideoStandard]
+       , puControls                ∷ !(BitMask ProcessingControl)
+       , puVideoStandards          ∷ !(BitMask VideoStandard)
        , puProcessing              ∷ !(Maybe StrIx)
        }
    | ExtensionUnitDesc
@@ -999,7 +1007,7 @@ data ComponentDesc
        , ctObjectiveFocalLengthMin ∷ !Int
        , ctObjectiveFocalLengthMax ∷ !Int
        , ctOcularFocalLength       ∷ !Int
-       , ctControls                ∷ ![CameraControl]
+       , ctControls                ∷ !(BitMask CameraControl)
        }
    | InputTerminalDesc
        { itId                      ∷ !ComponentID
@@ -1089,7 +1097,7 @@ camera_control_bitmask =
    , (17, CameraFocusAuto)
    ]
 
-unmarshalCameraControl ∷ Bits α ⇒ α → [CameraControl]
+unmarshalCameraControl ∷ Bits α ⇒ α → BitMask CameraControl
 unmarshalCameraControl = unmarshalBitmask camera_control_bitmask
 
 data ProcessingControl
@@ -1135,7 +1143,7 @@ processing_control_bitmask =
     , (17, ControlAnalogVideoLockStatus)
     ]
 
-unmarshalProcessingControls ∷ Bits α ⇒ α → [ProcessingControl]
+unmarshalProcessingControls ∷ Bits α ⇒ α → BitMask ProcessingControl
 unmarshalProcessingControls = unmarshalBitmask processing_control_bitmask
 
 data VideoStandard
@@ -1157,7 +1165,7 @@ video_standards_bitmask =
     , (5, VideoPAL_525_60)
     ]
 
-unmarshalVideoStandards ∷ Bits α ⇒ α → [VideoStandard]
+unmarshalVideoStandards ∷ Bits α ⇒ α → BitMask VideoStandard
 unmarshalVideoStandards = unmarshalBitmask video_standards_bitmask
 
 extractVideoControlDesc ∷ Interface → VideoControlDesc
@@ -1165,8 +1173,9 @@ extractVideoControlDesc iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
         extra = interfaceExtra alternate
         number = interfaceNumber alternate
-        (Right controlDesc, _) = Get.runGet (parseVCHeader number) extra
+        Right controlDesc = Get.runGet (parseVCHeader number) extra
     in controlDesc
+
 
 parseVCHeader ∷ InterfaceNumber → Get.Get VideoControlDesc
 parseVCHeader ifaceNumber = do
@@ -1316,7 +1325,7 @@ parseProcessingUnitDesc size =
                             then unmarshalVideoStandards `fmap` Get.getWord8
                               -- the UVC standard 1.0a did not define
                               -- this field. Ignoring it.
-                            else return []
+                            else return (BitMask [])
 
     return $ ProcessingUnitDesc
            { puId             = bUnitID
@@ -1369,12 +1378,12 @@ data VSDescriptor
            { ihNumFormats              ∷ !Int
            , ihTotalLength             ∷ !Int
            , ihEndpointAddress         ∷ !EndpointAddress
-           , ihInfo                    ∷ ![VSCapability]
+           , ihInfo                    ∷ !(BitMask VSCapability)
            , ihTerminalLink            ∷ !Word8
            , ihStillCaptureMethod      ∷ !Int
            , ihTriggerSupport          ∷ !Bool
            , ihTriggerUsage            ∷ !TriggerUsage
-           , ihControls                ∷ ![[VSControl]]
+           , ihControls                ∷ ![BitMask VSControl]
            }
    | OutputHeaderDesc
            { ohNumFormats              ∷ !Int
@@ -1390,7 +1399,7 @@ data VSDescriptor
            , fuDefaultFrameIndex       ∷ !Word8
            , fuAspectRatioX            ∷ !Int
            , fuAspectRatioY            ∷ !Int
-           , fuInterlaceFlags          ∷ ![InterlaceFlag]
+           , fuInterlaceFlags          ∷ !(BitMask InterlaceFlag)
            , fuCopyProtect             ∷ !Bool
            }
    | FrameUncompressed
@@ -1420,7 +1429,7 @@ vs_capability_bitmask =
    [ (0,  DynamicFormatChangeSupported)
    ]
 
-unmarshalVSCapability ∷ Bits α ⇒ α → [VSCapability]
+unmarshalVSCapability ∷ Bits α ⇒ α → BitMask VSCapability
 unmarshalVSCapability = unmarshalBitmask vs_capability_bitmask
 
 unmarshalTriggerSupport ∷ Word8 → Bool
@@ -1454,7 +1463,7 @@ vs_control_bitmask =
     , (5, UpdateFrameSegment)
     ]
 
-unmarshalVSControl ∷ Bits α ⇒ α → [VSControl]
+unmarshalVSControl ∷ Bits α ⇒ α → BitMask VSControl
 unmarshalVSControl = unmarshalBitmask vs_control_bitmask
 
 data CompressionFormat
@@ -1484,12 +1493,12 @@ data InterlaceFlag
    deriving (Eq, Show, Data, Typeable)
 
 -- On the road [to bitmask parsing] again, yehaaa ... wait no ;(
-unmarshalInterlaceFlags ∷ Word8 → [InterlaceFlag]
-unmarshalInterlaceFlags value = catMaybes [ testInterlaced
-                                          , testFieldsPerFrame
-                                          , testField1First
-                                          , testFieldPattern
-                                          , testDisplayMode ]
+unmarshalInterlaceFlags ∷ Word8 → BitMask InterlaceFlag
+unmarshalInterlaceFlags value = BitMask $ catMaybes [ testInterlaced
+                                                    , testFieldsPerFrame
+                                                    , testField1First
+                                                    , testFieldPattern
+                                                    , testDisplayMode ]
 
   where testInterlaced     = if value `testBit` 0
                                 then Just Interlaced
@@ -1569,7 +1578,7 @@ extractVideoStreamDesc iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
         extra = interfaceExtra alternate
         number = interfaceNumber alternate
-        (Right xs, _) = Get.runGet (parseVideoStreamDescs []) extra
+        Right xs = Get.runGet (parseVideoStreamDescs []) extra
     in VideoStreamingDesc xs number
 
 -- | Read the extra information of the video streaming interface
