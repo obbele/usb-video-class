@@ -10,7 +10,6 @@ import qualified Control.Exception as E
 import qualified Data.ByteString   as B
 
 import System.USB
-import System.USB.IO.Asynchronous
 import System.USB.UVC.Internals
 
 import Control.Monad            ( replicateM )
@@ -42,8 +41,17 @@ catchCommonUSBException io =
 -- Searching for a USB Video Class device.
 ----------------------------------------------------------------------}
 
+handleEMErrors ∷ USBException → IO ()
+handleEMErrors e = print $ "EVENT MANAGER ERROR: " ⧺ show e
+
+initCtx ∷ IO Ctx
+initCtx = do
+    ctx ← newCtx' handleEMErrors
+    setDebug ctx PrintWarnings
+    return ctx
+
 findVideoDevice ∷ IO Device
-findVideoDevice = newCtx ≫= getDevices ≫= \devices →
+findVideoDevice = initCtx ≫= getDevices ≫= \devices →
     case find hasVideoInterface devices of
          Nothing → error "Video device not found !"
          Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d

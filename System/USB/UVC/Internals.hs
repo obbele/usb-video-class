@@ -26,9 +26,7 @@ import ExtraUtils          ( unmarshalBitmask, marshalBitmask
                            , getUSBString )
 
 -- Private System.USB stuff.
-import System.USB hiding ( readControlExact, writeControlExact )
--- FIXME: why should we import Asynchronous ourself ?
-import System.USB.IO.Asynchronous
+import System.USB
 
 -- Private base system∘
 import Control.Monad       ( replicateM_, replicateM, when )
