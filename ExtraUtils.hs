@@ -1,27 +1,14 @@
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
 
 module ExtraUtils where
 
--- The UnicodeSyntax provides         -- ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
--- import Control.Applicative.Unicode -- ⊛ ∅
--- import Control.Arrow.Unicode       -- ⋙  ⋘  ⁂  ⧻  ⫴
--- import Control.Category.Unicode    -- ≫> ⋘  ∘
-import Control.Monad.Unicode       -- ≫= ≫ =≪
--- import Data.Bool.Unicode           -- ∧ ∨ ¬
--- import Data.Eq.Unicode             -- ≡ ≠
--- import Data.Foldable.Unicode       -- ∈ ∋ ∉ ∌
-import Data.Function.Unicode       -- ∘
--- import Data.List.Unicode           -- ⧺ ∪ ∖ ∆ ∩
--- import Data.Monoid.Unicode         -- ∅ ⊕
--- import Data.Ord.Unicode            -- ≤ ≥ ≮ ≯
-import Prelude.Unicode             -- π ÷ ⊥ ⋅
--- import Data.IntSet.Unicode         -- ∅ ⊆ ⊇ ⊈ ⊉ ⊂ ⊃ ⊄ ⊅
--- import Data.Sequence.Unicode       -- ⊲ ⊳ ⋈
+import Control.Monad.Unicode       ( (≫=) )
+import Prelude.Unicode             ( (≡), (∘) )
+
+import qualified Data.Text as T
 
 import System.USB
 import Utils ( decodeBCD, bits )
-
-import qualified Data.Text as T
 
 import Data.Word
 import Data.Bits

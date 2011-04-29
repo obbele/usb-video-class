@@ -1,7 +1,8 @@
 {-# LANGUAGE BangPatterns #-} -- where are they coming from ?
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
 {-# LANGUAGE CPP #-}
+
 
 -- Ho man ! How much would I like to have a library in Haskell similar
 -- to Common-Lisp's gigamonkeys binary-data.
@@ -39,22 +40,9 @@ import Data.Typeable       ( Typeable )
 import Data.List           ( find, minimumBy )
 import Text.Printf         ( printf )
 
--- Just because we can (?=with vim)
--- The UnicodeSyntax PRAGMA provides -- ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
---import Control.Applicative.Unicode -- ⊛ ∅
---import Control.Arrow.Unicode       -- ⋙  ⋘  ⁂  ⧻  ⫴
---import Control.Category.Unicode    -- ≫> ⋘  ∘
-import Control.Monad.Unicode       -- ≫= ≫ =≪
-import Data.Bool.Unicode           -- ∧ ∨ ¬
-import Data.Eq.Unicode             -- ≡ ≠
---import Data.Foldable.Unicode       -- ∈ ∋ ∉ ∌
-import Data.Function.Unicode       -- ∘
---import Data.List.Unicode           -- ⧺ ∪ ∖ ∆ ∩
---import Data.Monoid.Unicode         -- ∅ ⊕
---import Data.Ord.Unicode            -- ≤ ≥ ≮ ≯
-import Prelude.Unicode             -- π ÷ ⊥ ⋅ ∈
---import Data.IntSet.Unicode         -- ∅ ⊆ ⊇ ⊈ ⊉ ⊂ ⊃ ⊄ ⊅
---import Data.Sequence.Unicode       -- ⊲ ⊳ ⋈
+import Control.Monad.Unicode       ( (≫=) )
+import Data.List.Unicode           ( (⧺) )
+import Prelude.Unicode             ( (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
 
 {----------------------------------------------------------------------
 -- Boring stuff.

@@ -1,23 +1,10 @@
-{-# LANGUAGE UnicodeSyntax #-}
+{-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
 
 module Main where
 
--- Just because we can (?=with vim)
--- The UnicodeSyntax PRAGMA provides -- ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
---import Control.Applicative.Unicode -- ⊛ ∅
---import Control.Arrow.Unicode       -- ⋙  ⋘  ⁂  ⧻  ⫴
---import Control.Category.Unicode    -- ≫> ⋘  ∘
-import Control.Monad.Unicode       -- ≫= ≫ =≪
-import Data.Bool.Unicode           -- ∧ ∨ ¬
-import Data.Eq.Unicode             -- ≡ ≠
---import Data.Foldable.Unicode       -- ∈ ∋ ∉ ∌
-import Data.Function.Unicode       -- ∘
-import Data.List.Unicode           -- ⧺ ∪ ∖ ∆ ∩
---import Data.Monoid.Unicode         -- ∅ ⊕
---import Data.Ord.Unicode            -- ≤ ≥ ≮ ≯
---import Prelude.Unicode             -- π ÷ ⊥ ⋅ ∈
---import Data.IntSet.Unicode         -- ∅ ⊆ ⊇ ⊈ ⊉ ⊂ ⊃ ⊄ ⊅
---import Data.Sequence.Unicode       -- ⊲ ⊳ ⋈
+import Control.Monad.Unicode       ( (≫=), (=≪) )
+import Data.List.Unicode           ( (⧺) )
+import Prelude.Unicode             ( (∧), (≡), (∘) )
 
 import qualified Control.Exception as E
 import qualified Data.ByteString   as B
@@ -170,7 +157,7 @@ testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
              --threadDelay (1500 ⋅ 1000)
 
              setInterfaceAltSetting devh interfaceN x
-             result ← withUnbufferStdout $ replicateM 500 $ do
+             result ← withUnbufferStdout ∘ replicateM 500 $ do
                  waitFrameInterval interval
                  xs ← readIsochronous devh addr sizes timeout
                  putStr "."
