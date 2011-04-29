@@ -21,29 +21,11 @@ import Prelude.Unicode             -- π ÷ ⊥ ⋅
 import System.USB
 import Utils ( decodeBCD, bits )
 
-import qualified Data.ByteString as B
-import qualified Data.Text       as T
+import qualified Data.Text as T
 
 import Data.Word
 import Data.Bits
 import Data.List ( find )
-
-bGet ∷ B.ByteString → Int → Word8
-bGet bs offset = B.index bs offset
-
-wGet ∷ B.ByteString → Int → Word16
-wGet bs offset = byteStringToInteger $ subByteString bs offset 2
-
-dwGet ∷ B.ByteString → Int → Word32
-dwGet bs offset = byteStringToInteger $ subByteString bs offset 4
-
-byteStringToInteger ∷ Num α ⇒ B.ByteString → α
-byteStringToInteger bs = fromInteger $ B.foldr' f 0 bs
-  where
-    f w8 acc = acc ⋅ 256 + toInteger w8
-
-subByteString ∷ B.ByteString → Int → Int → B.ByteString
-subByteString bs offset len = B.take len ∘ B.drop offset $ bs
 
 unmarshalBitmask ∷ Bits α ⇒ [(Int, a)] → α → [a]
 unmarshalBitmask table value = foldr test [] table
