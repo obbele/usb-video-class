@@ -272,18 +272,16 @@ instance Show VideoPipe where
                     (vpHeight x)
                     (length $ vpFrames x)
 
--- | Throw 'InvalidParamException' if the probe action fails.
+-- | Read video frames.
+-- Throw 'InvalidParamException' if the probe action fails.
 readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Timeout
               → IO VideoPipe
 readVideoData video devh controls timeout = do
-    -- Probe the device for a control set.
-    ctrl ← negotiatePCControl video devh controls
-
     -- Now, we need to extract from the control set useful information,
     -- including:
     -- ⋅ the isopackets payload size which will allow us to choose a
-    --   correct alternate setting.  let transferSize = pcMaxPayloadTransferSize ctrl
-    let transferSize = pcMaxPayloadTransferSize ctrl
+    --   correct alternate setting.
+    let transferSize = pcMaxPayloadTransferSize controls
         interface    = head ∘ videoStreams $ video
         interfaceN   = interfaceNumber ∘ head $ interface
 
@@ -296,17 +294,17 @@ readVideoData video devh controls timeout = do
 
                  -- Compute the number of isopacket based on the frame
                  -- size.
-                 frameSize = pcMaxVideoFrameSize ctrl
+                 frameSize = pcMaxVideoFrameSize controls
                  ratio ∷ Double
                  ratio = fromIntegral frameSize / fromIntegral transferSize
                  numberOfIsoPackets ∷ Int
                  numberOfIsoPackets = ceiling ratio + 1
                  sizes = replicate numberOfIsoPackets transferSize
-                 interval = pcFrameInterval ctrl -- in units of 100ns.
+                 interval = pcFrameInterval controls
 
                  -- Additionnal information.
                  streamDesc = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
-                 frameIndex = pcFrameIndex ctrl
+                 frameIndex = pcFrameIndex controls
                  frameDesc  = head ∘ filter (\f → fuFrameIndex f ≡ frameIndex)
                             ∘ filter isFrameUncompressed
                             $ streamDesc
@@ -314,7 +312,7 @@ readVideoData video devh controls timeout = do
                  width  = fuWidth  frameDesc
                  fps = intervalToFPS interval
 
-                 formatIndex = pcFormatIndex ctrl
+                 formatIndex = pcFormatIndex controls
                  format = fuFormat
                         ∘ head ∘ filter (\f → fuFormatIndex f ≡ formatIndex)
                         ∘ filter isFormatUncompressed
@@ -654,18 +652,13 @@ isFrameUncompressed ∷ VSDescriptor → Bool
 isFrameUncompressed (FrameUncompressed _ _ _ _ _ _ _ _ _) = True
 isFrameUncompressed _                                     = False
 
-simplestProbeCommitControl ∷ VideoDevice → ProbeCommitControl
-simplestProbeCommitControl video =
-    let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
+customProbeCommitControl ∷ VideoDevice → FrameIndex → ProbeCommitControl
+customProbeCommitControl video idx =
+    let format = getFormatUncompressed video
 
-        format = case find isFormatUncompressed descriptors of
-                      Nothing → error "No FormatUncompressed descriptor !"
-                      Just x  → x
-
-        -- Select the frame with the minimum data payload, because I'm
-        -- lazy.
-        frames = filter isFrameUncompressed descriptors
-        frame = minimumBy (compare `on` fuMinBitRate) frames
+        frame = head ∘ filter (\f → fuFrameIndex f ≡ idx)
+              ∘ getFramesUncompressed
+              $ video
 
     in ProbeCommitControl
         { pcHint                   = BitMask [HintFrameInterval]
@@ -687,6 +680,40 @@ simplestProbeCommitControl video =
         -- endpoint ?
         , pcMaxPayloadTransferSize = 0
         }
+
+defaultProbeCommitControl ∷ VideoDevice → ProbeCommitControl
+defaultProbeCommitControl video =
+    let format = getFormatUncompressed video
+
+        -- Select the frame with the minimum data payload, because I'm
+        -- lazy.
+        frameIndex = fuDefaultFrameIndex format
+
+    in customProbeCommitControl video frameIndex
+
+simplestProbeCommitControl ∷ VideoDevice → ProbeCommitControl
+simplestProbeCommitControl video =
+    let format = getFormatUncompressed video
+
+        -- Select the frame with the minimum data payload, because I'm
+        -- lazy.
+        frame = minimumBy (compare `on` fuMinBitRate)
+              ∘ getFramesUncompressed
+              $ video
+
+    in customProbeCommitControl video (fuFrameIndex frame)
+
+getFormatUncompressed ∷ VideoDevice → VSDescriptor
+getFormatUncompressed video =
+    let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
+    in case find isFormatUncompressed descriptors of
+         Nothing → error "No FormatUncompressed descriptor !"
+         Just x  → x
+
+getFramesUncompressed ∷ VideoDevice → [VSDescriptor]
+getFramesUncompressed video =
+    let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
+    in filter isFrameUncompressed descriptors
 
 -- | Set the given 'ProbeCommitControl'. If the device answers with an
 -- identical control set, commits it and returns @Right control@, else
