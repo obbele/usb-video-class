@@ -15,34 +15,36 @@ import qualified Data.ByteString    as B
 import qualified Control.Exception  as E
 import qualified Data.Serialize.Get as Get
 import qualified Data.Serialize.Put as Put
-import qualified Data.Serialize     as Serialize
 
 -- Private libraries.
-import Utils               ( bits, genToEnum, genFromEnum )
-import ExtraUtils          ( unmarshalBitmask, marshalBitmask
-                           , BitMask(..), BitMaskTable
-                           , unmarshalStrIx, unmarshalReleaseNumber
-                           , unmarshalEndpointAddress
-                           , getUSBString )
+import Utils                   ( bits, genToEnum, genFromEnum )
+import ExtraUtils              ( unmarshalBitmask, marshalBitmask
+                               , BitMask(..), BitMaskTable
+                               , unmarshalStrIx, unmarshalReleaseNumber
+                               , unmarshalEndpointAddress
+                               , getUSBString )
 
--- Private System.USB stuff.
+-- Third parties.
 import System.USB
+import Data.Serialize          ( Serialize(..) )
 
--- Private base system∘
-import Control.Monad       ( replicateM_, replicateM, when )
-import Control.Concurrent  ( threadDelay )
-import Data.Bits           ( Bits, testBit, (.|.), shiftL )
-import Data.Function       ( on )
-import Data.Maybe          ( catMaybes )
-import Data.Word           ( Word8, Word16, Word32 )
-import Data.Data           ( Data )
-import Data.Typeable       ( Typeable )
-import Data.List           ( find, minimumBy )
-import Text.Printf         ( printf )
+-- Private base system.
+import Control.Monad           ( replicateM_, replicateM, when, forM_ )
+import Control.Concurrent      ( threadDelay, forkIO )
+import Control.Concurrent.Chan ( newChan, readChan, writeChan )
+import Data.Bits               ( Bits, testBit, (.|.), shiftL )
+import Data.Data               ( Data )
+import Data.Function           ( on )
+import Data.List               ( find, minimumBy, sortBy, foldl' )
+import Data.Maybe              ( catMaybes )
+import Data.Typeable           ( Typeable )
+import Data.Word               ( Word8, Word16, Word32 )
+import Text.Printf             ( printf )
+import System.IO               ( stdout, hSetBuffering, BufferMode(..) )
 
-import Control.Monad.Unicode       ( (≫=) )
-import Data.List.Unicode           ( (⧺) )
-import Prelude.Unicode             ( (⊥), (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
+import Control.Monad.Unicode   ( (≫=) )
+import Data.List.Unicode       ( (⧺) )
+import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
 
 {----------------------------------------------------------------------
 -- Boring stuff.
@@ -185,20 +187,43 @@ import Prelude.Unicode             ( (⊥), (∧), (∨), (≡), (≠), (⋅), (
 #define SVIDEO_CONNECTOR                          0x0402
 #define COMPONENT_CONNECTOR                       0x0403
 
+newtype GUID = GUID B.ByteString
+    deriving (Eq, Data, Typeable)
+
+instance Show GUID where
+    show (GUID bs) =
+        printf "{%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x}"
+               (B.index bs 3)
+               (B.index bs 2)
+               (B.index bs 1)
+               (B.index bs 0)
+               (B.index bs 5)
+               (B.index bs 4)
+               (B.index bs 7)
+               (B.index bs 6)
+               (B.index bs 8)
+               (B.index bs 9)
+               (B.index bs 10)
+               (B.index bs 11)
+               (B.index bs 12)
+               (B.index bs 13)
+               (B.index bs 14)
+               (B.index bs 15)
+
 -- USB Video Class 1.0a / Payload_uncompressed
 -- Table2-1: USB Video Payload uncompressed
 -- YUY2 32595559-0000-0010-8000-00AA00389B71
 -- NV12 3231564E-0000-0010-8000-00AA00389B71
-guid_YUY2, guid_NV12 ∷ B.ByteString
-guid_YUY2 = B.pack [ 0x32, 0x59, 0x55, 0x59
-                   , 0x00, 0x00, 0x00, 0x10
-                   , 0x80, 0x00, 0x00, 0xAA
-                   , 0x00, 0x38, 0x9B, 0x71]
+guid_YUY2, guid_NV12 ∷ GUID
+guid_YUY2 = GUID $ B.pack [ 0x32, 0x59, 0x55, 0x59
+                          , 0x00, 0x00, 0x00, 0x10
+                          , 0x80, 0x00, 0x00, 0xAA
+                          , 0x00, 0x38, 0x9B, 0x71]
 
-guid_NV12 = B.pack [ 0x32, 0x31, 0x56, 0x4E
-                   , 0x00, 0x00, 0x00, 0x10
-                   , 0x80, 0x00, 0x00, 0xAA
-                   , 0x00, 0x38, 0x9B, 0x71]
+guid_NV12 = GUID $ B.pack [ 0x32, 0x31, 0x56, 0x4E
+                          , 0x00, 0x00, 0x00, 0x10
+                          , 0x80, 0x00, 0x00, 0xAA
+                          , 0x00, 0x38, 0x9B, 0x71]
 
 -- Oki so things get strange because USB data seem to be provided with
 -- the wrong bit-endianness (well only subpart of the guid are reversed,
@@ -209,24 +234,134 @@ guid_NV12 = B.pack [ 0x32, 0x31, 0x56, 0x4E
 --
 -- Note: this behavior is "normal", the first 8 bytes are in big-endian
 -- notations, cf RFC 4122.
-guid_YUY2', guid_NV12' ∷ B.ByteString
-guid_YUY2' = B.pack [ 0x59, 0x55, 0x59, 0x32
-                    , 0x00, 0x00, 0x10, 0x00
-                    , 0x80, 0x00, 0x00, 0xAA
-                    , 0x00, 0x38, 0x9B, 0x71]
+guid_YUY2', guid_NV12' ∷ GUID
+guid_YUY2' = GUID $ B.pack [ 0x59, 0x55, 0x59, 0x32
+                           , 0x00, 0x00, 0x10, 0x00
+                           , 0x80, 0x00, 0x00, 0xAA
+                           , 0x00, 0x38, 0x9B, 0x71]
 
-guid_NV12' = B.pack [ 0x4E, 0x56, 0x31, 0x32
-                    , 0x00, 0x00, 0x10, 0x00
-                    , 0x80, 0x00, 0x00, 0xAA
-                    , 0x00, 0x38, 0x9B, 0x71]
+guid_NV12' = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
+                           , 0x00, 0x00, 0x10, 0x00
+                           , 0x80, 0x00, 0x00, 0xAA
+                           , 0x00, 0x38, 0x9B, 0x71]
 
 {----------------------------------------------------------------------
 -- Abstracting the video function quite a long way away.
 ----------------------------------------------------------------------}
 
 {----------------------------------------------------------------------
--- Start to get some isochronous fun.
+-- Video Data retrieving.
 ----------------------------------------------------------------------}
+
+data VideoPipe = VideoPipe
+    { vpFormat ∷ CompressionFormat
+    , vpWidth  ∷ Int
+    , vpHeight ∷ Int
+    , vpFrames ∷ [B.ByteString] -- FIXME: use a Chan instead of a (lazy?) list.
+    -- , vpStarved ∷ Bool
+    } deriving (Eq, Data, Typeable)
+
+instance Show VideoPipe where
+    show x = printf "VideoPipe { vpFormat = %s, vpWidth = %d, vpHeight = %d, vpFrames = [%d frames] }"
+                    (show $ vpFormat x)
+                    (vpWidth x)
+                    (vpHeight x)
+                    (length $ vpFrames x)
+
+-- | Throw 'InvalidParamException' if the probe action fails.
+readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Timeout
+              → IO VideoPipe
+readVideoData video devh controls timeout = do
+    -- Probe the device for a control set.
+    ctrl ← negotiatePCControl video devh controls
+
+    -- Now, we need to extract from the control set useful information,
+    -- including:
+    -- ⋅ the isopackets payload size which will allow us to choose a
+    --   correct alternate setting.  let transferSize = pcMaxPayloadTransferSize ctrl
+    let transferSize = pcMaxPayloadTransferSize ctrl
+        interface    = head ∘ videoStreams $ video
+        interfaceN   = interfaceNumber ∘ head $ interface
+
+    case findIsochronousAltSettings interface transferSize of
+         Nothing → E.throwIO InvalidParamException
+         Just x  → do
+             let altInterface = interface !! fromIntegral x
+                 Just ep = find isIsoEndpoint (interfaceEndpoints altInterface)
+                 addr = endpointAddress ep
+
+                 -- Compute the number of isopacket based on the frame
+                 -- size.
+                 frameSize = pcMaxVideoFrameSize ctrl
+                 ratio ∷ Double
+                 ratio = fromIntegral frameSize / fromIntegral transferSize
+                 numberOfIsoPackets ∷ Int
+                 numberOfIsoPackets = ceiling ratio + 1
+                 sizes = replicate numberOfIsoPackets transferSize
+                 interval = pcFrameInterval ctrl -- in units of 100ns.
+
+                 -- Additionnal information.
+                 streamDesc = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
+                 frameIndex = pcFrameIndex ctrl
+                 frameDesc  = head ∘ filter (\f → fuFrameIndex f ≡ frameIndex)
+                            ∘ filter isFrameUncompressed
+                            $ streamDesc
+                 height = fuHeight frameDesc
+                 width  = fuWidth  frameDesc
+                 fps = intervalToFPS interval
+
+                 formatIndex = pcFormatIndex ctrl
+                 format = fuFormat
+                        ∘ head ∘ filter (\f → fuFormatIndex f ≡ formatIndex)
+                        ∘ filter isFormatUncompressed
+                        $ streamDesc
+
+             printf "----------------------------------\n"
+             printf "dwMaxPayloadTransferSize:  %7d\n" transferSize
+             printf "dwMaxVideoFrameSize:       %7d\n" frameSize
+             printf "Number of iso packets:     %7d\n" numberOfIsoPackets
+             printf "Iso-packets size:          %7d\n" transferSize
+             printf "FrameInterval: (*100ns)    %7d\n" interval
+             printf "Frames per second:           %3.2f\n" fps
+             printf "FormatUncompressed:           %s\n" (show format)
+             printf "Dimensions:                %dx%d\n" width height
+             printf "----------------------------------\n"
+             --threadDelay (1500 ⋅ 1000)
+
+             chan ← newChan
+
+             let worker _  0 = return ()
+                 worker idx i = do
+                     xs ← readIsochronous devh addr sizes timeout
+                     waitFrameInterval interval
+                     writeChan chan (idx, xs)
+                     worker idx (i - 1) -- loop i times
+
+                 ids = ['a'..'j']
+                 ntimes = 100
+
+             -- launch (length ids) threads iterating (mtimes) times
+             _ ← forM_ ids $ \idx → forkIO $ worker (idx:[]) ntimes
+
+             result ← withInterfaceAltSetting devh interfaceN x
+                    ∘ withUnbufferStdout
+                    ∘ replicateM (ntimes * length ids)
+                    $ do
+                (idx, xs) ← readChan chan
+                putStr idx
+                return xs
+
+             putStr "\n"
+
+             -- We cheat here since our camera provide SCR time.
+             let xs = sortBy (compare `on` scrTime) (concat result)
+
+             return $ VideoPipe
+                    { vpFormat = format
+                    , vpWidth  = width
+                    , vpHeight = height
+                    , vpFrames = xs
+                    }
 
 -- Search a (stream) interface and select the correct alt-setting for
 -- which the isochronous endpoint has a payload equal to xferSize.
@@ -248,16 +383,109 @@ findIsochronousAltSettings iface xferSize =
                 in x ⋅ (1 + fromEnum y)
 
 -- | Convert from units of 100 ns to 'threadDelay' microseconds.
-waitFrameInterval ∷ Int → IO ()
-waitFrameInterval t = threadDelay (t `div` 10)
+waitFrameInterval ∷ FrameInterval → IO ()
+waitFrameInterval t = threadDelay (fromIntegral t `div` 10)
 
 isIsoEndpoint ∷ EndpointDesc → Bool
 isIsoEndpoint ep = case endpointAttribs ep of
                      Isochronous _ _ → True
                      _               → False
 
+-- Interval is in units of 100ns
+-- ⇒ There is 1e7 units of 100ns in one second …
+intervalToFPS ∷ FrameInterval → Float
+intervalToFPS x = 10000000 / fromIntegral x
+
+scrTime ∷ B.ByteString → Word32
+scrTime bs =
+    let StreamHeader _ _ _ (Just (t, _)) = extractStreamHeader bs
+    in t
+
+withInterfaceAltSetting ∷ DeviceHandle
+                        → InterfaceNumber → InterfaceAltSetting
+                        → IO α → IO α
+withInterfaceAltSetting devh iface alt =
+    E.bracket_ (setInterfaceAltSetting devh iface alt)
+               (setInterfaceAltSetting devh iface 0)
+
+withUnbufferStdout ∷ IO α → IO α
+withUnbufferStdout =
+    E.bracket_ (hSetBuffering stdout NoBuffering)
+               (hSetBuffering stdout LineBuffering)
+
 {----------------------------------------------------------------------
 -- Decoding uncompressed video frames.
+----------------------------------------------------------------------}
+
+-- | Given a list of ordered payload, returns a list of raw data yuy2
+-- frames. That is we skip empty payloads, remove frame headers and
+-- concatenate together the different payloads of a single image frame.
+-- Last but not the least, we assert that every frame as a correct size.
+extractFrames ∷ Int → Int → [B.ByteString] → [B.ByteString]
+extractFrames w h bs =
+    map normalizeSize ∘ groupFrames ∘ removeEmptyPayload $ bs
+
+  where
+    -- remove empty payloads.
+    removeEmptyPayload = filter ((> 12) ∘ B.length)
+
+    groupFrames xs =
+        let parity0 = frameParity ∘ head $ bs
+            (_, result, _) = foldl' groupFrame ([], [], parity0) xs
+        in reverse result
+
+    -- scan every frame of same parity until we found the EOF flag.
+    groupFrame (frame,acc,parity) x
+
+        -- add this payload to our current frame.
+        | parity ≡ frameParity x
+        ∧ (not $ isEndOfFrame x)     = let payload = B.drop 12 x
+                                       in ((payload:frame),acc,parity)
+
+        -- add this payload to our current frame.
+        -- and flush our current frame to the acc result.
+        | parity ≡ frameParity x
+        ∧ isEndOfFrame x             = let payload = B.drop 12 x
+                                           frame' = B.concat
+                                                  ∘ reverse
+                                                  $ (payload:frame)
+                                           parity' = toggleParity parity
+                                       in ([], frame':acc, parity')
+
+        -- Ignore anything else.
+        | otherwise                  = (frame, acc, parity)
+
+    -- FIXME: Size should be with * height * (2 =?= bits-per-pixel)
+    normalizeSize x =
+        let actualSize = B.length x
+            frameSize  = w * h * 2
+        in case compare actualSize frameSize of
+             -- pad the image if our stream was truncated.
+             LT → B.concat [x, B.replicate (frameSize - actualSize) 0]
+
+             -- the first frame is often too big.
+             -- truncating to a correct size.
+             GT → B.drop (actualSize - frameSize) x
+
+             EQ → x
+
+frameParity ∷ B.ByteString → StreamHeaderFlag
+frameParity bs =
+    let StreamHeader _ (BitMask xs) _ _ = extractStreamHeader bs
+        parity = if EvenFrame ∈ xs then EvenFrame else OddFrame
+    in parity
+
+isEndOfFrame ∷ B.ByteString → Bool
+isEndOfFrame bs =
+    let StreamHeader _ (BitMask xs) _ _ = extractStreamHeader bs
+    in EndOfFrame ∈ xs
+
+toggleParity ∷ StreamHeaderFlag → StreamHeaderFlag
+toggleParity EvenFrame = OddFrame
+toggleParity _         = EvenFrame
+
+{----------------------------------------------------------------------
+-- (Uncompressed) Payload Frame Header.
 ----------------------------------------------------------------------}
 
 -- | The first 32 bits is th source time clock in native device clock
@@ -282,7 +510,7 @@ data StreamHeaderFlag
    | EndOfHeader
    deriving (Eq, Show, Data, Typeable)
 
-instance Serialize.Serialize (BitMask StreamHeaderFlag) where
+instance Serialize (BitMask StreamHeaderFlag) where
     put = Put.putWord8 ∘ marshalBitmask stream_header_bitmask
     get = unmarshalBFH `fmap` Get.getWord8
 
@@ -322,16 +550,16 @@ parseStreamHeader = do
 
     return $ StreamHeader bLength bfh mPTS mSCR
 
-instance Serialize.Serialize StreamHeader where
+instance Serialize StreamHeader where
     put = (⊥)
     get = parseStreamHeader
 
 extractStreamHeader ∷ B.ByteString → StreamHeader
 extractStreamHeader bs = runGetExact (B.take 12 bs)
 
-runGetExact ∷ Serialize.Serialize a ⇒ B.ByteString → a
+runGetExact ∷ Serialize a ⇒ B.ByteString → a
 runGetExact bs =
-    let Right a = Get.runGet Serialize.get bs
+    let Right a = Get.runGet get bs
     in a
 
 {----------------------------------------------------------------------
@@ -537,15 +765,17 @@ data ProbeCommitControl = ProbeCommitControl
     { pcHint                   ∷ !(BitMask ProbeHint)
     , pcFormatIndex            ∷ !Word8
     , pcFrameIndex             ∷ !Word8
-    , pcFrameInterval          ∷ !Int
-    , pcKeyFrameRate           ∷ !Int
-    , pcPFrameRate             ∷ !Int
-    , pcCompQuality            ∷ !Int
-    , pcCompWindowSize         ∷ !Int
-    , pcDelay                  ∷ !Int
+    , pcFrameInterval          ∷ !FrameInterval
+    , pcKeyFrameRate           ∷ !Word16
+    , pcPFrameRate             ∷ !Word16
+    , pcCompQuality            ∷ !Word16
+    , pcCompWindowSize         ∷ !Word16
+    , pcDelay                  ∷ !Word16
     , pcMaxVideoFrameSize      ∷ !Int
     , pcMaxPayloadTransferSize ∷ !Int
     } deriving (Eq, Show, Data, Typeable)
+
+type FrameInterval = Word32
 
 data ProbeHint
    = HintFrameInterval
@@ -586,12 +816,12 @@ unparseVideoProbeCommitControl release value = do
     let bmHint                   = marshalProbeHint $ pcHint value
         bFormatIndex             = pcFormatIndex value
         bFrameIndex              = pcFrameIndex value
-        dwFrameInterval          = fromIntegral $ pcFrameInterval value
-        wKeyFrameRate            = fromIntegral $ pcKeyFrameRate value
-        wPFrameRate              = fromIntegral $ pcPFrameRate value
-        wCompQuality             = fromIntegral $ pcCompQuality value
-        wCompWindowSize          = fromIntegral $ pcCompWindowSize value
-        wDelay                   = fromIntegral $ pcDelay value
+        dwFrameInterval          = pcFrameInterval value
+        wKeyFrameRate            = pcKeyFrameRate value
+        wPFrameRate              = pcPFrameRate value
+        wCompQuality             = pcCompQuality value
+        wCompWindowSize          = pcCompWindowSize value
+        wDelay                   = pcDelay value
         dwMaxVideoFrameSize      = fromIntegral $ pcMaxVideoFrameSize value
         dwMaxPayloadTransferSize = fromIntegral $ pcMaxPayloadTransferSize value
 
@@ -620,12 +850,12 @@ parseVideoProbeCommitControl _ = do
     bmHint ← unmarshalProbeHint `fmap` Get.getWord16le
     bFormatIndex ← Get.getWord8
     bFrameIndex ← Get.getWord8
-    dwFrameInterval ← fromIntegral `fmap` Get.getWord32le
-    wKeyFrameRate ← fromIntegral `fmap` Get.getWord16le
-    wPFrameRate ← fromIntegral `fmap` Get.getWord16le
-    wCompQuality ← fromIntegral `fmap` Get.getWord16le
-    wCompWindowSize ← fromIntegral `fmap` Get.getWord16le
-    wDelay ← fromIntegral `fmap` Get.getWord16le
+    dwFrameInterval ← Get.getWord32le
+    wKeyFrameRate ← Get.getWord16le
+    wPFrameRate ← Get.getWord16le
+    wCompQuality ← Get.getWord16le
+    wCompWindowSize ← Get.getWord16le
+    wDelay ← Get.getWord16le
     dwMaxVideoFrameSize ← fromIntegral `fmap` Get.getWord32le
     dwMaxPayloadTransferSize ← fromIntegral `fmap` Get.getWord32le
 
@@ -993,6 +1223,7 @@ data ComponentDesc
        }
    | ExtensionUnitDesc
        { xuId                      ∷ !ComponentID
+       , xuGuid                    ∷ !GUID
        , xuNrInPins                ∷ !Int
        , xuSourceID                ∷ ![ComponentID]
        , xuExtension               ∷ !(Maybe StrIx)
@@ -1338,7 +1569,8 @@ parseExtensionUnitDesc ∷ Int → Get.Get ComponentDesc
 parseExtensionUnitDesc size =
   safeBoundParser size $ do
     bUnitID      ← Get.getWord8
-    Get.skip (16 + 1) -- skipping guidExtensionCode & bNumControls.
+    guidExtensionCode ← GUID `fmap` Get.getBytes 16
+    Get.skip 1 -- skipping bNumControls.
     bNrInPins    ← fromIntegral `fmap` Get.getWord8
     baSourceIDs  ← replicateM bNrInPins Get.getWord8
     bControlSize ← fromIntegral `fmap` Get.getWord8
@@ -1347,6 +1579,7 @@ parseExtensionUnitDesc size =
 
     return $ ExtensionUnitDesc
            { xuId        = bUnitID
+           , xuGuid      = guidExtensionCode
            , xuNrInPins  = bNrInPins
            , xuSourceID  = baSourceIDs
            , xuExtension = iExtension
@@ -1374,18 +1607,16 @@ data VSDescriptor
    = UnknownFrameOrFormat !Int !Word8
    | InputHeaderDesc
            { ihNumFormats              ∷ !Int
-           , ihTotalLength             ∷ !Int
            , ihEndpointAddress         ∷ !EndpointAddress
            , ihInfo                    ∷ !(BitMask VSCapability)
            , ihTerminalLink            ∷ !Word8
-           , ihStillCaptureMethod      ∷ !Int
+           , ihStillCaptureMethod      ∷ !Word8
            , ihTriggerSupport          ∷ !Bool
            , ihTriggerUsage            ∷ !TriggerUsage
            , ihControls                ∷ ![BitMask VSControl]
            }
    | OutputHeaderDesc
            { ohNumFormats              ∷ !Int
-           , ohTotalLength             ∷ !Int
            , ohEndpointAddress         ∷ !EndpointAddress
            , ohTerminalLink            ∷ !Word8
            }
@@ -1408,7 +1639,7 @@ data VSDescriptor
            , fuMinBitRate              ∷ !Int
            , fuMaxBitRate              ∷ !Int
            , fuMaxVideoFrameBufferSize ∷ !Int
-           , fuDefaultFrameInterval    ∷ !Int
+           , fuDefaultFrameInterval    ∷ !FrameInterval
            , fuFrameIntervalType       ∷ !FrameIntervalType
            }
    | ColorMatchingDesc
@@ -1417,6 +1648,10 @@ data VSDescriptor
            , cmMatrixCoefficients      ∷ !MatrixCoefficients
            }
    deriving (Eq, Show, Data, Typeable)
+
+-- | Method of still image capture supported as describe in USB Video
+-- Class specification v1.0a, section 2.4.2.4 "Still Image Capture".
+type StillCaptureMethod = Word8
 
 data VSCapability
    = DynamicFormatChangeSupported
@@ -1465,17 +1700,17 @@ unmarshalVSControl ∷ Bits α ⇒ α → BitMask VSControl
 unmarshalVSControl = unmarshalBitmask vs_control_bitmask
 
 data CompressionFormat
-   = UnknownCompressionFormat B.ByteString
+   = UnknownCompressionFormat GUID
    | YUY2
    | NV12
    deriving (Eq, Show, Data, Typeable)
 
 unmarshalGuidFormat ∷ B.ByteString → CompressionFormat
-unmarshalGuidFormat bs | bs ≡ guid_YUY2  = YUY2
-                       | bs ≡ guid_YUY2' = YUY2
-                       | bs ≡ guid_NV12  = NV12
-                       | bs ≡ guid_NV12' = NV12
-                       | otherwise       = UnknownCompressionFormat bs
+unmarshalGuidFormat bs | GUID bs ≡ guid_YUY2  = YUY2
+                       | GUID bs ≡ guid_YUY2' = YUY2
+                       | GUID bs ≡ guid_NV12  = NV12
+                       | GUID bs ≡ guid_NV12' = NV12
+                       | otherwise = UnknownCompressionFormat (GUID bs)
 
 data InterlaceFlag
    = Interlaced
@@ -1526,11 +1761,11 @@ unmarshalUncompressedCapabilities = (`testBit` 0)
 
 data FrameIntervalType
    = FrameIntervalContinous
-        { fitMin  ∷ !Int
-        , fitMax  ∷ !Int
-        , fitStep ∷ !Int
+        { fitMin  ∷ !FrameInterval
+        , fitMax  ∷ !FrameInterval
+        , fitStep ∷ !FrameInterval
         }
-   | FrameIntervalDiscrete ![Int]
+   | FrameIntervalDiscrete ![FrameInterval]
    deriving (Eq, Show, Data, Typeable)
 
 data ColorPrimaries
@@ -1651,17 +1886,16 @@ parseVSFrameUncompressed size =
     dwMinBitRate ← fromIntegral `fmap` Get.getWord32le
     dwMaxBitRate ← fromIntegral `fmap` Get.getWord32le
     dwMaxVideoFrameBufferSize ← fromIntegral `fmap` Get.getWord32le
-    dwDefaultFrameInterval ← fromIntegral `fmap` Get.getWord32le
+    dwDefaultFrameInterval ← Get.getWord32le
     bFrameIntervalType ← fromIntegral `fmap` Get.getWord8
 
     frameType ← if bFrameIntervalType ≡ 0
-       then do min'  ← fromIntegral `fmap` Get.getWord32le
-               max'  ← fromIntegral `fmap` Get.getWord32le
-               step' ← fromIntegral `fmap` Get.getWord32le
+       then do min'  ← Get.getWord32le
+               max'  ← Get.getWord32le
+               step' ← Get.getWord32le
                return $ FrameIntervalContinous min' max' step'
 
-       else do xs ← replicateM bFrameIntervalType
-                               (fromIntegral `fmap` Get.getWord32le)
+       else do xs ← replicateM bFrameIntervalType Get.getWord32le
                return $ FrameIntervalDiscrete xs
 
     return $ FrameUncompressed
@@ -1682,11 +1916,11 @@ parseVSInputHeader ∷ Int → Get.Get VSDescriptor
 parseVSInputHeader size =
   safeBoundParser size $ do
     bNumFormats ← fromIntegral `fmap` Get.getWord8
-    wTotalLength ← fromIntegral `fmap` Get.getWord16le
+    Get.skip 2 -- skipping wTotalLength
     bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
     bmInfo ← unmarshalVSCapability `fmap` Get.getWord8
     bTerminalLink ← Get.getWord8
-    bStillCaptureMethod ← fromIntegral `fmap` Get.getWord8
+    bStillCaptureMethod ← Get.getWord8
     bTriggerSupport ← unmarshalTriggerSupport `fmap` Get.getWord8
     bTriggerUsage ← unmarshalTriggerUsage `fmap` Get.getWord8
     bControlSize ← fromIntegral `fmap` Get.getWord8
@@ -1697,7 +1931,6 @@ parseVSInputHeader size =
 
     return $ InputHeaderDesc
            { ihNumFormats         = bNumFormats
-           , ihTotalLength        = wTotalLength
            , ihEndpointAddress    = bEndpointAddress
            , ihInfo               = bmInfo
            , ihTerminalLink       = bTerminalLink
@@ -1715,13 +1948,12 @@ parseVSOutputHeader size =
   safeBoundParser size $ do
 
     bNumFormats ← fromIntegral `fmap` Get.getWord8
-    wTotalLength ← fromIntegral `fmap` Get.getWord16le
+    Get.skip 2 -- skipping wTotalLength.
     bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
     bTerminalLink ← Get.getWord8
 
     return $ OutputHeaderDesc
            { ohNumFormats         = bNumFormats
-           , ohTotalLength        = wTotalLength
            , ohEndpointAddress    = bEndpointAddress
            , ohTerminalLink       = bTerminalLink
            }

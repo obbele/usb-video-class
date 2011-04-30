@@ -43,3 +43,5 @@ executable test
   other-modules: System.USB.UVC.Internals
                , Utils
                , ExtraUtils
+               , Codec.UVC.RGBA
+               , BMP
