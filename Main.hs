@@ -99,8 +99,8 @@ findVideoDevice = initCtx ≫= getDevices ≫= \devices →
          Nothing → error "Video device not found !"
          Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
                       return d
-  where
-    --predicate := isMyVideoDevice isMy2ndVideoDevice hasVideoInterface
+
+  --where predicate := isMyVideoDevice isMy2ndVideoDevice hasVideoInterface
 
 isMyVideoDevice ∷ Device → Bool
 isMyVideoDevice dev = deviceVendorId  devDesc ≡ 0x0471
@@ -212,18 +212,18 @@ testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
 
              chan ← newChan
 
-             let thread _  0 = return ()
-                 thread idx i = do
+             let worker _  0 = return ()
+                 worker idx i = do
                      xs ← readIsochronous devh addr sizes timeout
                      waitFrameInterval interval
                      writeChan chan (idx, xs)
-                     thread idx (i - 1) -- loop i times
+                     worker idx (i - 1) -- loop i times
 
                  ids = ['a'..'j']
                  ntimes = 100
 
              -- launch (length ids) threads iterating (mtimes) times
-             _ ← forM_ ids $ \idx → forkIO $ thread (idx:[]) ntimes
+             _ ← forM_ ids $ \idx → forkIO $ worker (idx:[]) ntimes
 
              result ← withInterfaceAltSetting devh interfaceN x
                     ∘ withUnbufferStdout
@@ -243,8 +243,9 @@ testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
   where timeout = 1000 -- in milliseconds
 
 getSCRTime ∷ B.ByteString → Word32
-getSCRTime bs = let StreamHeader _ _ _ (Just (t, _)) = extractStreamHeader bs
-                in t
+getSCRTime bs =
+    let StreamHeader _ _ _ (Just (t, _)) = extractStreamHeader bs
+    in t
 
 getFrameParity ∷ B.ByteString → StreamHeaderFlag
 getFrameParity bs =
@@ -263,7 +264,7 @@ toggleParity EvenFrame = OddFrame
 toggleParity _         = EvenFrame
 
 -- | Given a list of ordered payload, returns a list of raw data yuy2
--- frames∘ That is we skip empty payloads, remove frame headers and
+-- frames. That is we skip empty payloads, remove frame headers and
 -- concatenate together the different payloads of a single image frame.
 -- Last but not the least, we assert that every frame as a correct size.
 extractFrames ∷ Int → Int → [B.ByteString] → [B.ByteString]
@@ -302,18 +303,17 @@ extractFrames w h bs =
 
     -- FIXME: Size should be with * height * (2 =?= bits-per-pixel)
     normalizeSize x =
-        case compare actualSize frameSize of
-           -- pad the image if our stream was truncated.
-           LT → B.concat [x, B.replicate (frameSize - actualSize) 0]
+        let actualSize = B.length x
+            frameSize  = w * h * 2
+        in case compare actualSize frameSize of
+             -- pad the image if our stream was truncated.
+             LT → B.concat [x, B.replicate (frameSize - actualSize) 0]
 
-           -- the first frame is often too big.
-           -- truncating to a correct size.
-           GT → B.drop (actualSize - frameSize) x
+             -- the first frame is often too big.
+             -- truncating to a correct size.
+             GT → B.drop (actualSize - frameSize) x
 
-           EQ → x
-      where
-        actualSize = B.length x
-        frameSize  = w * h * 2
+             EQ → x
 
 intervalToFPS ∷ Int → Float
 intervalToFPS x = 10000000 / fromIntegral x
@@ -334,8 +334,24 @@ withInterfaceAltSetting devh iface alt =
                (setInterfaceAltSetting devh iface 0)
 
 yuy2ToBMP ∷ Int → Int → B.ByteString → BMP
-yuy2ToBMP w h bs = packRGBA32ToBMP w h (yuy2ToRGBA bs)
+yuy2ToBMP w h bs = packRGBA32ToBMP w h bs'
+  where
+    bs' = reorderBMPByteString w ∘ yuy2ToRGBA $ bs
 
+-- | The lines are presented in reverse order to the packRGBA32ToBMP
+-- function.
+reorderBMPByteString ∷ Int → B.ByteString → B.ByteString
+reorderBMPByteString w bs =
+    let rows = cut [] bs
+    in B.concat rows
+
+  where
+    cut acc xs | B.null xs = acc
+               | otherwise = cut (B.take l xs:acc) (B.drop l xs)
+
+    l = w * 4 -- width * 4 bits per pixel (rgb+a)
+
+-- | Converting from YUY2 4:2:0 pixels to RGBA ones.
 yuy2ToRGBA ∷ B.ByteString → B.ByteString
 yuy2ToRGBA bs = f [] bs
   where
@@ -345,6 +361,7 @@ yuy2ToRGBA bs = f [] bs
                                (r1,g1,b1) = yuv2rgb (y1,u0,v0)
                            in f (255:b1:g1:r1:255:b0:g0:r0:acc) (B.drop 4 xs)
 
+-- | see http://msdn.microsoft.com/en-us/library/ms893078.aspx
 yuv2rgb ∷ (Word8, Word8, Word8) → (Word8, Word8, Word8)
 yuv2rgb (y,u,v) = (r, g, b)
   where
