@@ -1,51 +1,39 @@
-What is working ?
-=================
+This is a proof-of-concept program. It shows how to use libusb and
+Haskell to write a simple video driver based on the USB Video Class
+specifications (aka UVC).
+
+This example is based on the old version 1.0a of the specs. Devices
+implementing the new version 1.1 might worked, but none was test so far.
+
+Status
+======
 
 1. UVC Video Control and Video Streaming descriptors are correctly parsed.
-   (but this work could benefit from a clever binary (de)serialization
-   library).
 
 2. Video probe and commit controls seem to work. The device answers to
    the requests and accepts the control commit.
 
-3. The (read) Iso-packets are sent and received without noticeable
-   system memory or cpu overhead
+3. Video streams can be retrieved and raw data (in YUY2 format) is
+   readily accessible. Two modules `Codec.UVC.RGBA` and `BMP` allow
+   export to bmp files.
 
 What is not working ?
 =====================
 
-1. The import from System.USB.IO.Asynchronous conflict with System.USB
-   (readControlExact and writeControlExact).
-
-2. The (read) Iso-packets are received empty. This is not a problem with
-   the libusb bindings, but with the UVC device initialization. Maybe
-   I'm missing some trigger or control initialization.
+Only the probe/commit requests are implemented. Others requests
+(including camera pantilt, zoom, …, processing unit brightness,
+contrast, hue, saturation, … and vendor specific controls are *NOT*
+implemented.
 
 What could be improved ?
 ========================
 
-I'm really needing a good binary serialization and deserialization
-library. Something like Peter Seibel's monkeylib-binary-data. The process
-in Haskell is really painful, one has to i) define the Haskell algebraic
-data types/representations; ii) write un-marshallers to convert every
-entitiy from @[Word8]@ (or @unsigned char \*@ streams) to their Haskell
-counterparts; iii) do the same thing to marshal data from Haskell back
-to C/ByteString/Whatever.
-
-I'm almost missing the OO inheritance and polymorphism stuff which is a
-good fit for this type of hierarchical descriptors as they are described
-in the USB specification.
-
-Perhaps I should look at typeclass equivalent to 'Storable' but working
-on ByteString and not CString.
+Handling multiple video streaming interface. For now, only the first
+video streaming interface (and its endpoint) is used.
 
 About the video data stream
 ===========================
 
-Possible solutions to empty video data stream are:
+Only uncompressed streams are supported.
 
-1. check the status endpoint.
-
-2. check the video control settings.
-
-3. check the isopacket timing (delay between each submission).
+Only YUY2 uncompressed data can be decoded.
