@@ -739,7 +739,7 @@ tryPCControl video devh ctrl = do
 -- See UVC specifications 1.0a, Section 4.3.1.1 Video Prove and Commit
 -- Control for more information.
 negotiatePCControl ∷ VideoDevice → DeviceHandle → ProbeCommitControl
-                      → IO ProbeCommitControl
+                   → IO ProbeCommitControl
 negotiatePCControl video devh ctrl0 = do
     -- Try with our default control.
     result ← tryPCControl video devh ctrl0
@@ -767,8 +767,8 @@ negotiatePCControl video devh ctrl0 = do
 
 data ProbeCommitControl = ProbeCommitControl
     { pcHint                   ∷ !(BitMask ProbeHint)
-    , pcFormatIndex            ∷ !Word8
-    , pcFrameIndex             ∷ !Word8
+    , pcFormatIndex            ∷ !FormatIndex
+    , pcFrameIndex             ∷ !FrameIndex
     , pcFrameInterval          ∷ !FrameInterval
     , pcKeyFrameRate           ∷ !Word16
     , pcPFrameRate             ∷ !Word16
@@ -778,8 +778,6 @@ data ProbeCommitControl = ProbeCommitControl
     , pcMaxVideoFrameSize      ∷ !Int
     , pcMaxPayloadTransferSize ∷ !Int
     } deriving (Eq, Show, Data, Typeable)
-
-type FrameInterval = Word32
 
 data ProbeHint
    = HintFrameInterval
@@ -986,6 +984,10 @@ isCameraTerminal ∷ ComponentDesc → Bool
 isCameraTerminal (CameraTerminalDesc _ _ _ _ _ _ _ _) = True
 isCameraTerminal _                                    = False
 
+isExtensionUnit ∷ ComponentDesc → Bool
+isExtensionUnit (ExtensionUnitDesc _ _ _ _ _) = True
+isExtensionUnit _                             = False
+
 isColorMatching ∷ VSDescriptor → Bool
 isColorMatching (ColorMatchingDesc _ _ _) = True
 isColorMatching _                         = False
@@ -1006,10 +1008,12 @@ instance Show VideoDevice where
         vcontrol = pcontrol ∘ videoCtrlDesc $ video
         pcontrol = \c → printf " +-- controlIface(iface=%d)\n\\
                                \%s\\
+                               \%s\\
                                \%s"
                                (vcdInterfaceNumber c)
-                               (punits c)
                                (pcameras c)
+                               (punits c)
+                               (pxunits c)
 
         -- Pretty printing the processing units.
         punits   ∷ VideoControlDesc → String
@@ -1032,6 +1036,15 @@ instance Show VideoDevice where
                                (ctId c)
                                (concatMap pcctrl ∘ unBitMask ∘ ctControls $ c)
         pcctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
+
+        -- Pretty printing extension units.
+        pxunits  ∷ VideoControlDesc → String
+        pxunits  = concatMap pxunit
+                 ∘ filter isExtensionUnit
+                 ∘ vcdComponentDescs
+        pxunit   = \u → printf " ----- ExtensionUnit[%d] %s\n"
+                               (xuId u)
+                               (show $ xuGuid u)
 
         -- Pretty printing streaming interfaces.
         streams  ∷ String
@@ -1625,18 +1638,18 @@ data VSDescriptor
            , ohTerminalLink            ∷ !Word8
            }
    | FormatUncompressed
-           { fuFormatIndex             ∷ !Word8
+           { fuFormatIndex             ∷ !FormatIndex
            , fuNumFrameDescriptors     ∷ !Int
            , fuFormat                  ∷ !CompressionFormat
            , fuBitsPerPixel            ∷ !Int
-           , fuDefaultFrameIndex       ∷ !Word8
+           , fuDefaultFrameIndex       ∷ !FrameIndex
            , fuAspectRatioX            ∷ !Int
            , fuAspectRatioY            ∷ !Int
            , fuInterlaceFlags          ∷ !(BitMask InterlaceFlag)
            , fuCopyProtect             ∷ !Bool
            }
    | FrameUncompressed
-           { fuFrameIndex              ∷ !Word8
+           { fuFrameIndex              ∷ !FrameIndex
            , fuStillImageSupported     ∷ !Bool
            , fuWidth                   ∷ !Int
            , fuHeight                  ∷ !Int
@@ -1656,6 +1669,10 @@ data VSDescriptor
 -- | Method of still image capture supported as describe in USB Video
 -- Class specification v1.0a, section 2.4.2.4 "Still Image Capture".
 type StillCaptureMethod = Word8
+
+type FrameInterval = Word32
+type FormatIndex = Word8
+type FrameIndex = Word8
 
 data VSCapability
    = DynamicFormatChangeSupported
