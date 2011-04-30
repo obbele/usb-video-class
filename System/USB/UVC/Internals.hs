@@ -20,12 +20,12 @@ import qualified Data.Serialize.Put as Put
 import Utils                   ( bits, genToEnum, genFromEnum )
 import ExtraUtils              ( unmarshalBitmask, marshalBitmask
                                , BitMask(..), BitMaskTable
-                               , unmarshalStrIx, unmarshalReleaseNumber
-                               , unmarshalEndpointAddress
                                , getUSBString )
 
 -- Third parties.
 import System.USB
+import System.USB.Internal     ( unmarshalStrIx, unmarshalReleaseNumber
+                               , unmarshalEndpointAddress )
 import Data.Serialize          ( Serialize(..) )
 
 -- Private base system.
@@ -187,6 +187,8 @@ import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (⋅), (∘)
 #define SVIDEO_CONNECTOR                          0x0402
 #define COMPONENT_CONNECTOR                       0x0403
 
+-- | Global Unique Identifier. See RFC 4122.
+-- Used to identify video formats and vendor specific extended units.
 newtype GUID = GUID B.ByteString
     deriving (Eq, Data, Typeable)
 
@@ -253,6 +255,8 @@ guid_NV12' = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
 -- Video Data retrieving.
 ----------------------------------------------------------------------}
 
+-- | A data type holding the information needed to decode an
+-- uncompressed video stream.
 data VideoPipe = VideoPipe
     { vpFormat ∷ CompressionFormat
     , vpWidth  ∷ Int
@@ -363,7 +367,7 @@ readVideoData video devh controls timeout = do
                     , vpFrames = xs
                     }
 
--- Search a (stream) interface and select the correct alt-setting for
+-- | Search a (stream) interface and select the correct alt-setting for
 -- which the isochronous endpoint has a payload equal to xferSize.
 findIsochronousAltSettings ∷ Interface → Int → Maybe InterfaceAltSetting
 findIsochronousAltSettings iface xferSize =

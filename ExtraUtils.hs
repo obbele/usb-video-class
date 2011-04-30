@@ -4,19 +4,19 @@
 
 module ExtraUtils where
 
-import Control.Monad.Unicode       ( (≫=) )
-import Prelude.Unicode             ( (≡), (∘) )
-
 import qualified Data.Text as T
 
-import System.USB
-import Utils         ( decodeBCD, bits )
+import System.USB            ( Device, deviceDesc
+                             , DeviceHandle, withDeviceHandle
+                             , StrIx, getStrDesc, deviceProductStrIx )
 
-import Data.Data     ( Data )
-import Data.Typeable ( Typeable )
-import Data.Word     ( Word8, Word16 )
-import Data.Bits     ( Bits, testBit, setBit )
-import Data.List     ( find )
+import Data.Data             ( Data )
+import Data.Typeable         ( Typeable )
+import Data.Bits             ( Bits, testBit, setBit )
+import Data.List             ( find )
+
+import Control.Monad.Unicode ( (≫=) )
+import Prelude.Unicode       ( (≡), (∘) )
 
 type BitMaskTable a = [(Int, a)]
 newtype BitMask a   = BitMask { unBitMask ∷ [a] }
@@ -33,6 +33,8 @@ marshalBitmask table (BitMask xs) = foldr test 0 xs
                Just (i,_) → acc `setBit` i
                _          → acc
 
+-- | Retrieve a string descriptor (in US_english) from a device.
+-- May throw 'USBException's.
 getUSBString ∷ DeviceHandle → Maybe StrIx → IO (Maybe String)
 getUSBString devh mStrIx =
     case mStrIx of
@@ -41,26 +43,9 @@ getUSBString devh mStrIx =
   where
     langID = (0x09, 0x01) -- US english
 
+-- | Retrieve the device product string descriptor in US_english.
+-- May throw 'USBException's.
 getDeviceName ∷ Device → IO (Maybe String)
 getDeviceName dev = withDeviceHandle dev $ flip getUSBString strIx
   where
     strIx = deviceProductStrIx (deviceDesc dev)
-
-{----------------------------------------------------------------------
--- Copied-and-pasted from System.USB.Internal
-----------------------------------------------------------------------}
-
-unmarshalReleaseNumber ∷ Word16 → ReleaseNumber
-unmarshalReleaseNumber abcd = (a, b, c, d)
-    where
-      [a, b, c, d] = map fromIntegral $ decodeBCD 4 abcd
-
-unmarshalStrIx ∷ Word8 → Maybe StrIx
-unmarshalStrIx 0     = Nothing
-unmarshalStrIx strIx = Just strIx
-
-unmarshalEndpointAddress ∷ Word8 → EndpointAddress
-unmarshalEndpointAddress a =
-    EndpointAddress { endpointNumber    = fromIntegral $ bits 0 3 a
-                    , transferDirection = if testBit a 7 then In else Out
-                    }
