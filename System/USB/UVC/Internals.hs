@@ -29,9 +29,12 @@ import System.USB.Internal     ( unmarshalStrIx, unmarshalReleaseNumber
 import Data.Serialize          ( Serialize(..) )
 
 -- Private base system.
-import Control.Monad           ( replicateM_, replicateM, when, forM_ )
+import Control.Arrow           ( (&&&) )
+import Control.Monad           ( replicateM_, replicateM, when )
 import Control.Concurrent      ( threadDelay, forkIO )
 import Control.Concurrent.Chan ( newChan, readChan, writeChan )
+import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, readMVar
+                               , takeMVar, putMVar, modifyMVar )
 import Data.Bits               ( Bits, testBit, (.|.), shiftL )
 import Data.Data               ( Data )
 import Data.Function           ( on )
@@ -42,9 +45,9 @@ import Data.Word               ( Word8, Word16, Word32 )
 import Text.Printf             ( printf )
 import System.IO               ( stdout, hSetBuffering, BufferMode(..) )
 
-import Control.Monad.Unicode   ( (≫=) )
+import Control.Monad.Unicode   ( (≫=), (≫) )
 import Data.List.Unicode       ( (⧺) )
-import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (⋅), (∘), (∈) )
+import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (≥), (⋅), (∘), (∈) )
 
 {----------------------------------------------------------------------
 -- Boring stuff.
@@ -261,9 +264,11 @@ data VideoPipe = VideoPipe
     { vpFormat ∷ CompressionFormat
     , vpWidth  ∷ Int
     , vpHeight ∷ Int
-    , vpFrames ∷ [B.ByteString] -- FIXME: use a Chan instead of a (lazy?) list.
+    , vpFrames ∷ [VideoFrame] -- FIXME: use a Chan instead of a (lazy?) list.
     -- , vpStarved ∷ Bool
     } deriving (Eq, Data, Typeable)
+
+type VideoFrame = B.ByteString
 
 instance Show VideoPipe where
     show x = printf "VideoPipe { vpFormat = %s, vpWidth = %d, vpHeight = %d, vpFrames = [%d frames] }"
@@ -274,96 +279,153 @@ instance Show VideoPipe where
 
 -- | Read video frames.
 -- Throw 'InvalidParamException' if the probe action fails.
-readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Timeout
-              → IO VideoPipe
-readVideoData video devh controls timeout = do
+readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
+              → Timeout → IO VideoPipe
+readVideoData video devh ctrl nframes timeout = do
     -- Now, we need to extract from the control set useful information,
     -- including:
-    -- ⋅ the isopackets payload size which will allow us to choose a
+    -- * the isopackets payload size which will allow us to choose a
     --   correct alternate setting.
-    let transferSize = pcMaxPayloadTransferSize controls
+    let transferSize = pcMaxPayloadTransferSize ctrl
         interface    = head ∘ videoStreams $ video
-        interfaceN   = interfaceNumber ∘ head $ interface
 
     case findIsochronousAltSettings interface transferSize of
          Nothing → E.throwIO InvalidParamException
          Just x  → do
-             let altInterface = interface !! fromIntegral x
-                 Just ep = find isIsoEndpoint (interfaceEndpoints altInterface)
-                 addr = endpointAddress ep
 
-                 -- Compute the number of isopacket based on the frame
-                 -- size.
-                 frameSize = pcMaxVideoFrameSize controls
+             -- Extractin _a lot_ of information from our video device
+             -- and our control parameters.
+             let altInterface = interface !! fromIntegral x
+                 interfaceN   = interfaceNumber altInterface
+                 frameSize    = pcMaxVideoFrameSize ctrl
+                 interval     = pcFrameInterval ctrl
+
+                 -- Endpoint address.
+                 addr = endpointAddress
+                      ∘ head ∘ filter isIsoEndpoint
+                      ∘ interfaceEndpoints
+                      $ altInterface
+
+                 -- Compute the number of isopackets and their size
+                 -- based on the frame size.
+                 -- N.B.: the number of packets is caped to 64. I don't
+                 -- know why but the system could not process high-res
+                 -- frame requiring npackets > 2000.
                  ratio ∷ Double
                  ratio = fromIntegral frameSize / fromIntegral transferSize
-                 numberOfIsoPackets ∷ Int
-                 numberOfIsoPackets = ceiling ratio + 1
-                 sizes = replicate numberOfIsoPackets transferSize
-                 interval = pcFrameInterval controls
+                 npackets ∷ Int
+                 npackets = if ratio > 64 then 64 else 1 + ceiling ratio
+                 sizes = replicate npackets transferSize
 
                  -- Additionnal information.
-                 streamDesc = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
-                 frameIndex = pcFrameIndex controls
-                 frameDesc  = head ∘ filter (\f → fuFrameIndex f ≡ frameIndex)
-                            ∘ filter isFrameUncompressed
-                            $ streamDesc
-                 height = fuHeight frameDesc
-                 width  = fuWidth  frameDesc
-                 fps = intervalToFPS interval
-
-                 formatIndex = pcFormatIndex controls
                  format = fuFormat
-                        ∘ head ∘ filter (\f → fuFormatIndex f ≡ formatIndex)
-                        ∘ filter isFormatUncompressed
-                        $ streamDesc
+                        ∘ getFormatUncompressed
+                        $ video
+                 (w,h)  = (fuWidth &&& fuHeight)
+                        ∘ head
+                        ∘ filter (\f → fuFrameIndex f ≡ pcFrameIndex ctrl)
+                        ∘ getFramesUncompressed
+                        $ video
 
-             printf "----------------------------------\n"
-             printf "dwMaxPayloadTransferSize:  %7d\n" transferSize
-             printf "dwMaxVideoFrameSize:       %7d\n" frameSize
-             printf "Number of iso packets:     %7d\n" numberOfIsoPackets
-             printf "Iso-packets size:          %7d\n" transferSize
-             printf "FrameInterval: (*100ns)    %7d\n" interval
-             printf "Frames per second:           %3.2f\n" fps
-             printf "FormatUncompressed:           %s\n" (show format)
-             printf "Dimensions:                %dx%d\n" width height
-             printf "----------------------------------\n"
-             --threadDelay (1500 ⋅ 1000)
 
-             chan ← newChan
+             printIsoInformations transferSize frameSize npackets
+                                  interval format w h
 
-             let worker _  0 = return ()
-                 worker idx i = do
-                     xs ← readIsochronous devh addr sizes timeout
-                     waitFrameInterval interval
-                     writeChan chan (idx, xs)
-                     worker idx (i - 1) -- loop i times
-
-                 ids = ['a'..'j']
-                 ntimes = 100
-
-             -- launch (length ids) threads iterating (mtimes) times
-             _ ← forM_ ids $ \idx → forkIO $ worker (idx:[]) ntimes
-
-             result ← withInterfaceAltSetting devh interfaceN x
-                    ∘ withUnbufferStdout
-                    ∘ replicateM (ntimes * length ids)
-                    $ do
-                (idx, xs) ← readChan chan
-                putStr idx
-                return xs
-
-             putStr "\n"
+             threadDelay (1500 ⋅ 1000)
+             frames ← withInterfaceAltSetting devh interfaceN x $
+                 retrieveNFrames devh addr sizes interval timeout nframes
 
              -- We cheat here since our camera provide SCR time.
-             let xs = sortBy (compare `on` scrTime) (concat result)
+             let xs = sortBy (compare `on` scrTime) frames
 
              return $ VideoPipe
                     { vpFormat = format
-                    , vpWidth  = width
-                    , vpHeight = height
+                    , vpWidth  = w
+                    , vpHeight = h
                     , vpFrames = xs
                     }
+
+type Lock = MVar ()
+
+boundWorker ∷ IO () → IO Lock
+boundWorker io = do
+    lock ← newEmptyMVar
+    forkIO $ io `E.finally` putMVar lock ()
+    return lock
+
+waitBoundWorker ∷ Lock → IO ()
+waitBoundWorker = takeMVar
+
+retrieveNFrames ∷ DeviceHandle → EndpointAddress → [Int] → FrameInterval
+                → Timeout → Int → IO [VideoFrame]
+retrieveNFrames devh addr sizes interval timeout nframes = do
+    let ids = ['a'..'j'] -- worker identifiers
+
+    count ← newMVar 0
+    chan  ← newChan
+
+    let readStream idx = retryNTimes 2 $ do
+            xs ← readIsochronous devh addr sizes timeout
+            writeChan chan (idx, xs)
+
+            done ← (≥ nframes) `fmap` readMVar count
+            if done
+               then return () -- end
+               else waitFrameInterval interval ≫ readStream idx -- loop
+
+    -- launch (length ids) boundWorkers.
+    workers ← mapM (boundWorker ∘ readStream) ids
+
+    E.finally (withUnbufferStdout $ consumeVideoStream [] chan count)
+              (mapM_ waitBoundWorker workers)
+
+  where
+    consumeVideoStream acc chan count = do
+        (idx, xs) ← readChan chan
+        putStr [idx]
+
+        -- FIXME: do not recompute stream header each times.
+        let newFrames = length ∘ filter isEndOfFrame $ xs
+        n' ← modifyMVar count $ \n → return (n + newFrames, n + newFrames)
+        if n' ≥ nframes
+           then return ∘ concat ∘ reverse $ (xs:acc)
+           else consumeVideoStream (xs:acc) chan count
+
+
+-- | Catch 'IOException' and retry N times.
+-- This is an ugly(?) workaround the errno=2 error encountered when
+-- requesting read isochronous packets.
+--
+-- FIXME: does this exception handling must be done inside the
+-- System.USB.Base module ?
+retryNTimes ∷ Int → IO α → IO α
+retryNTimes 0 io = io
+retryNTimes n io = E.catch io handle
+  where
+    handle e = case e of
+        IOException _ → threadDelay 5000 ≫ retryNTimes (n - 1) io
+        _             → E.throwIO e
+
+
+printIsoInformations ∷ Int → Int → Int
+                     → FrameInterval → CompressionFormat → Int → Int
+                     → IO ()
+printIsoInformations xferSize frameSize npackets ival fmt w h = do
+    printf "----------------------------------\n"
+    printf "dwMaxVideoFrameSize:       %7d\n"     frameSize
+    printf "Number of iso packets:     %7d\n"     npackets
+    printf "Iso-packets size:          %7d\n"     xferSize
+    printf "FrameInterval: (*100ns)    %7d\n"     ival
+    printf "Frames per second:           %3.2f\n" fps
+    printf "FormatUncompressed:           %s\n"   (show fmt)
+    printf "Dimensions:              %9s\n"       dimensions
+    printf "----------------------------------\n"
+
+  where
+    fps = intervalToFPS ival
+
+    dimensions ∷ String
+    dimensions = printf "%dx%d" w h
 
 -- | Search a (stream) interface and select the correct alt-setting for
 -- which the isochronous endpoint has a payload equal to xferSize.
@@ -652,6 +714,7 @@ isFrameUncompressed ∷ VSDescriptor → Bool
 isFrameUncompressed (FrameUncompressed _ _ _ _ _ _ _ _ _) = True
 isFrameUncompressed _                                     = False
 
+-- | Select an uncompressed frame by its index number.
 customProbeCommitControl ∷ VideoDevice → FrameIndex → ProbeCommitControl
 customProbeCommitControl video idx =
     let format = getFormatUncompressed video
@@ -681,6 +744,7 @@ customProbeCommitControl video idx =
         , pcMaxPayloadTransferSize = 0
         }
 
+-- | Select the recommanded uncompressed frame.
 defaultProbeCommitControl ∷ VideoDevice → ProbeCommitControl
 defaultProbeCommitControl video =
     let format = getFormatUncompressed video
@@ -691,13 +755,10 @@ defaultProbeCommitControl video =
 
     in customProbeCommitControl video frameIndex
 
+-- | Select the frame with the minimum data payload.
 simplestProbeCommitControl ∷ VideoDevice → ProbeCommitControl
 simplestProbeCommitControl video =
-    let format = getFormatUncompressed video
-
-        -- Select the frame with the minimum data payload, because I'm
-        -- lazy.
-        frame = minimumBy (compare `on` fuMinBitRate)
+    let frame = minimumBy (compare `on` fuMinBitRate)
               ∘ getFramesUncompressed
               $ video
 

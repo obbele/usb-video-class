@@ -1,7 +1,6 @@
 #!/bin/sh -e
 
-cabal build
-
 rm -fr /tmp/uvc_*.yuy2
 ./dist/build/test/test video +RTS -N3
-ffplay -f rawvideo -pix_fmt yuyv422  -s 160x120 /tmp/uvc_160_120.yuy2
+SIZE=`ls -1 /tmp/uvc_*.yuy2 | grep -oE '[0-9]+x[0-9]+'`
+ffplay -f rawvideo -pix_fmt yuyv422  -s ${SIZE} /tmp/uvc_*.yuy2

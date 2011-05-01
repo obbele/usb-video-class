@@ -5,6 +5,18 @@ specifications (aka UVC).
 This example is based on the old version 1.0a of the specs. Devices
 implementing the new version 1.1 might worked, but none was test so far.
 
+How to test (at your own risks)
+===============================
+
+Check that you have the right permission on your video USB device file
+handler in /dev/bus/usb/\*/\*.
+
+Run `./images.sh` to retrieve a bunch of BMP images and display them
+(with feh).
+
+Run `./video.sh` to retrieve store raw YUY2 video stream to disk and
+display it with ffplay (a tool from FFMPEG).
+
 Status
 ======
 
@@ -18,15 +30,28 @@ Status
    export to bmp files.
 
 What is not working ?
-=====================
+---------------------
+
+Background threads reading isochronous requests may emit exception and
+deadlock the whole program.
+
+High-resolution frames (1280x800) causes error while parsing the frame
+stream headers.
+
+What could be improved ?
+------------------------
+
+The system load is to high when processing (!not retrieving) video raw
+data. Improvement to the stream header parsing, frames re-ordering and
+RGBA conversion would be welcome.
+
+A binding to gstreamer/xine/ffmpeg/whatever to directly display the
+video.
 
 Only the probe/commit requests are implemented. Others requests
 (including camera pantilt, zoom, …, processing unit brightness,
 contrast, hue, saturation, … and vendor specific controls are *NOT*
 implemented.
-
-What could be improved ?
-========================
 
 Handling multiple video streaming interface. For now, only the first
 video streaming interface (and its endpoint) is used.

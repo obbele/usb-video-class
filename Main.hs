@@ -37,7 +37,7 @@ writeRawDataToDisk ∷ IO ()
 writeRawDataToDisk = do
     VideoPipe _ w h xs ← testISO
     let frames = extractFrames w h $ xs
-        filename = printf "/tmp/uvc_%d_%d.yuy2" w h
+        filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
     B.writeFile filename (B.concat frames)
 
@@ -156,6 +156,8 @@ testProbe = findVideoDevice ≫= getVideoDevice ≫= \video →
 testISO ∷ IO VideoPipe
 testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
-    ctrl ← negotiatePCControl video devh (simplestProbeCommitControl video)
-    readVideoData video devh ctrl 1000
-
+    ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
+    readVideoData video devh ctrl nframes timeout
+  where
+    nframes = 100
+    timeout = noTimeout
