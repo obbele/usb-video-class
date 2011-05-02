@@ -55,6 +55,9 @@ implemented.
 Handling multiple video streaming interface. For now, only the first
 video streaming interface (and its endpoint) is used.
 
+Using the ColorMatching descriptor to get the conversion to RGB(A)
+right.
+
 About the video data stream
 ===========================
 

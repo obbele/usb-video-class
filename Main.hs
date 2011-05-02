@@ -67,9 +67,9 @@ writeBMPImages ∷ IO ()
 writeBMPImages = do
     VideoPipe fmt w h frames ← testISO
     let bitmaps = case fmt of
-        NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA) frames
-        YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
-        _    → error "Unknown format"
+            NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
+            YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
+            _    → error "Unknown format"
     foo (0 ∷ Int) bitmaps
     return ()
 
