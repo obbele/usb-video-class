@@ -25,9 +25,8 @@ Status
 2. Video probe and commit controls seem to work. The device answers to
    the requests and accepts the control commit.
 
-3. Video streams can be retrieved and raw data (in YUY2 format) is
-   readily accessible. Two modules `Codec.UVC.RGBA` and `BMP` allow
-   export to bmp files.
+3. Video streams can be retrieved and raw data is readily accessible.
+   Two modules `Codec.UVC.RGBA` and `BMP` allow export to bmp files.
 
 What is not working ?
 ---------------------
@@ -61,4 +60,5 @@ About the video data stream
 
 Only uncompressed streams are supported.
 
-Only YUY2 uncompressed data can be decoded.
+Only YUY2 uncompressed data can be decoded to BMP images. NV12 support
+is experimental.
