@@ -9,7 +9,8 @@ import Codec.BMP                ( writeBMP )
 
 import System.USB
 import System.USB.UVC.Internals
-import BMP                      ( yuy2ToBMP )
+import BMP                      ( rgbaToBMP )
+import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
 
 import Data.List                ( find )
 import Text.Printf              ( printf )
@@ -64,8 +65,11 @@ inspectData = do
 -- This function is not optimised and consume /a lot/ of CPU ressources.
 writeBMPImages ∷ IO ()
 writeBMPImages = do
-    VideoPipe _ w h frames ← testISO
-    let bitmaps = map (yuy2ToBMP w h) frames
+    VideoPipe fmt w h frames ← testISO
+    let bitmaps = case fmt of
+        NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA) frames
+        YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
+        _    → error "Unknown format"
     foo (0 ∷ Int) bitmaps
     return ()
 
