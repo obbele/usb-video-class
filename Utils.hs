@@ -1,5 +1,10 @@
 {-# LANGUAGE CPP, NoImplicitPrelude, UnicodeSyntax, BangPatterns #-}
 
+-- | Module re-imported from "System.USB" codebase.
+--
+-- original author: Bas van Dijk
+--
+-- license: BSD3
 module Utils where
 
 --------------------------------------------------------------------------------

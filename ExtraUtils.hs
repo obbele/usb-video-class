@@ -1,4 +1,4 @@
-{-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
+{-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 
@@ -18,9 +18,14 @@ import Data.List             ( find )
 import Control.Monad.Unicode ( (≫=) )
 import Prelude.Unicode       ( (≡), (∘) )
 
-type BitMaskTable a = [(Int, a)]
+-- | A type to help creating 'Serialize' instance of binary objects
+-- containing flags.
 newtype BitMask a   = BitMask { unBitMask ∷ [a] }
     deriving (Eq, Show, Data, Typeable)
+
+-- | An association list mapping bit position (from 0 to n-1) to their
+-- equivalent Haskell representation.
+type BitMaskTable a = [(Int, a)]
 
 unmarshalBitmask ∷ Bits α ⇒ BitMaskTable a → α → BitMask a
 unmarshalBitmask table value = BitMask $ foldr test [] table

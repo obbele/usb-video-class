@@ -8,7 +8,84 @@
 -- Ho man ! How much would I like to have a library in Haskell similar
 -- to Common-Lisp's gigamonkeys binary-data.
 
-module System.USB.UVC.Internals where
+module System.USB.UVC.Internals
+    (
+    -- * The VideoDevice and its interface association
+      VideoDevice(..)
+    , getVideoDevice
+    , hasVideoInterface
+
+    -- * VideoDevice handling
+    , withVideoDeviceHandle
+    , unsafeOpenVideoDevice
+    , unsafeCloseVideoDevice
+
+    -- * VideoStreaming Interface Descriptors
+    --, extractVideoStreamDesc
+    , VideoStreamingDesc(..)
+    , VSDescriptor(..)
+    , VSCapability(..)
+    , TriggerUsage(..)
+    , VSControl(..)
+    , CompressionFormat(..)
+    , InterlaceFlag(..)
+    , FrameIntervalType(..)
+    , ColorPrimaries(..)
+    , TransferCharacteristics(..)
+    , MatrixCoefficients(..)
+    , StillCaptureMethod
+    , isColorMatching
+    , getFramesUncompressed
+    , getFormatUncompressed
+
+    -- * VideoControl Interface Descriptor
+    --, extractVideoControlDesc
+    , VideoControlDesc(..)
+    , ComponentDesc(..)
+    , ComponentID
+    , ProcessingControl(..)
+    , VideoStandard(..)
+    , TerminalType(..)
+    , CameraControl(..)
+
+    -- * Video control requests
+    , VideoRequestType(..)
+    , VideoRequest(..)
+
+    -- * Probe and Commit Control
+    , ProbeCommitControl(..)
+    , ProbeHint(..)
+    , negotiatePCControl
+    , tryPCControl
+    , simplestProbeCommitControl
+    , defaultProbeCommitControl
+    , customProbeCommitControl
+    , probeCommitSet
+    , probeCommitGet
+    , ProbeAction(..)
+
+    -- * Uncompressed stream header
+    , extractStreamHeader
+    , StreamHeader(..)
+    , StreamHeaderFlag(..)
+    , Parity(..)
+    , SourceClockReference
+    , PresentationTimeStamp
+
+    -- * Video data streaming
+    , VideoPipe(..)
+    , readVideoData
+    , intervalToFPS
+
+    -- * Common types
+    , Width
+    , Height
+    , Frame
+    , FormatIndex
+    , FrameIndex
+    , FrameInterval
+    , GUID(..)
+    ) where
 
 -- Qualified imports.
 import qualified Data.ByteString    as B
@@ -34,7 +111,7 @@ import Control.Monad           ( replicateM_, replicateM, when )
 import Control.Concurrent      ( threadDelay, forkIO )
 import Control.Concurrent.Chan ( newChan, readChan, writeChan )
 import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, readMVar
-                               , takeMVar, putMVar, modifyMVar )
+                               , takeMVar, putMVar, modifyMVar, modifyMVar_ )
 import Data.Bits               ( Bits, testBit, (.|.), shiftL )
 import Data.Data               ( Data )
 import Data.Function           ( on )
@@ -190,8 +267,10 @@ import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (≥), (⋅)
 #define SVIDEO_CONNECTOR                          0x0402
 #define COMPONENT_CONNECTOR                       0x0403
 
--- | Global Unique Identifier. See RFC 4122.
--- Used to identify video formats and vendor specific extended units.
+-- | Global Unique Identifier.
+-- Used to identify video formats and vendor specific extension units.
+--
+-- See RFC 4122  <http://www.ietf.org/rfc/rfc4122.txt>
 newtype GUID = GUID B.ByteString
     deriving (Eq, Data, Typeable)
 
@@ -215,21 +294,6 @@ instance Show GUID where
                (B.index bs 14)
                (B.index bs 15)
 
--- USB Video Class 1.0a / Payload_uncompressed
--- Table2-1: USB Video Payload uncompressed
--- YUY2 32595559-0000-0010-8000-00AA00389B71
--- NV12 3231564E-0000-0010-8000-00AA00389B71
-guid_YUY2, guid_NV12 ∷ GUID
-guid_YUY2 = GUID $ B.pack [ 0x32, 0x59, 0x55, 0x59
-                          , 0x00, 0x00, 0x00, 0x10
-                          , 0x80, 0x00, 0x00, 0xAA
-                          , 0x00, 0x38, 0x9B, 0x71]
-
-guid_NV12 = GUID $ B.pack [ 0x32, 0x31, 0x56, 0x4E
-                          , 0x00, 0x00, 0x00, 0x10
-                          , 0x80, 0x00, 0x00, 0xAA
-                          , 0x00, 0x38, 0x9B, 0x71]
-
 -- Oki so things get strange because USB data seem to be provided with
 -- the wrong bit-endianness (well only subpart of the guid are reversed,
 -- which is even more confusing). For example, my webcam device is
@@ -239,20 +303,34 @@ guid_NV12 = GUID $ B.pack [ 0x32, 0x31, 0x56, 0x4E
 --
 -- Note: this behavior is "normal", the first 8 bytes are in big-endian
 -- notations, cf RFC 4122.
-guid_YUY2', guid_NV12' ∷ GUID
-guid_YUY2' = GUID $ B.pack [ 0x59, 0x55, 0x59, 0x32
-                           , 0x00, 0x00, 0x10, 0x00
-                           , 0x80, 0x00, 0x00, 0xAA
-                           , 0x00, 0x38, 0x9B, 0x71]
 
-guid_NV12' = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
-                           , 0x00, 0x00, 0x10, 0x00
-                           , 0x80, 0x00, 0x00, 0xAA
-                           , 0x00, 0x38, 0x9B, 0x71]
+-- | USB Video Class 1.0a / Payload_uncompressed
+-- Table2-1: USB Video Payload uncompressed
+-- YUY2 @{32595559-0000-0010-8000-00AA00389B71}@
+--
+guid_YUY2 ∷ GUID
+guid_YUY2 = GUID $ B.pack [ 0x59, 0x55, 0x59, 0x32
+                          , 0x00, 0x00, 0x10, 0x00
+                          , 0x80, 0x00, 0x00, 0xAA
+                          , 0x00, 0x38, 0x9B, 0x71]
+
+-- | USB Video Class 1.0a / Payload_uncompressed
+-- Table2-1: USB Video Payload uncompressed
+-- NV12 @{3231564E-0000-0010-8000-00AA00389B71}@
+--
+guid_NV12 ∷ GUID
+guid_NV12 = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
+                          , 0x00, 0x00, 0x10, 0x00
+                          , 0x80, 0x00, 0x00, 0xAA
+                          , 0x00, 0x38, 0x9B, 0x71]
 
 {----------------------------------------------------------------------
 -- Abstracting the video function quite a long way away.
 ----------------------------------------------------------------------}
+
+type Width  = Int
+type Height = Int
+type Frame  = B.ByteString
 
 {----------------------------------------------------------------------
 -- Video Data retrieving.
@@ -262,13 +340,11 @@ guid_NV12' = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
 -- uncompressed video stream.
 data VideoPipe = VideoPipe
     { vpFormat ∷ CompressionFormat
-    , vpWidth  ∷ Int
-    , vpHeight ∷ Int
-    , vpFrames ∷ [VideoFrame] -- FIXME: use a Chan instead of a (lazy?) list.
+    , vpWidth  ∷ Width
+    , vpHeight ∷ Height
+    , vpFrames ∷ [Frame] -- FIXME: use a Chan instead of a (lazy?) list.
     -- , vpStarved ∷ Bool
     } deriving (Eq, Data, Typeable)
-
-type VideoFrame = B.ByteString
 
 instance Show VideoPipe where
     show x = printf "VideoPipe { vpFormat = %s, vpWidth = %d, vpHeight = %d, vpFrames = [%d frames] }"
@@ -278,14 +354,11 @@ instance Show VideoPipe where
                     (length $ vpFrames x)
 
 -- | Read video frames.
--- Throw 'InvalidParamException' if the probe action fails.
+-- Throw 'InvalidParamException' the MaxPayloadTransferSize requested by
+-- the ProbeCommitControl could not be found.
 readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
               → Timeout → IO VideoPipe
 readVideoData video devh ctrl nframes timeout = do
-    -- Now, we need to extract from the control set useful information,
-    -- including:
-    -- * the isopackets payload size which will allow us to choose a
-    --   correct alternate setting.
     let transferSize = pcMaxPayloadTransferSize ctrl
         interface    = head ∘ videoStreams $ video
 
@@ -331,82 +404,90 @@ readVideoData video devh ctrl nframes timeout = do
              printIsoInformations transferSize frameSize npackets
                                   interval format w h
 
-             threadDelay (1500 ⋅ 1000)
              frames ← withInterfaceAltSetting devh interfaceN x $
                  retrieveNFrames devh addr sizes interval timeout nframes
 
-             -- We cheat here since our camera provide SCR time.
              let xs = sortBy (compare `on` scrTime) frames
 
              return $ VideoPipe
                     { vpFormat = format
                     , vpWidth  = w
                     , vpHeight = h
-                    , vpFrames = xs
+                    , vpFrames = extractFrames w h xs
                     }
 
 type Lock = MVar ()
 
+-- | Execute a computation in a separate thread and provide a 'Lock' to
+-- wait for its termination.
 boundWorker ∷ IO () → IO Lock
 boundWorker io = do
     lock ← newEmptyMVar
     forkIO $ io `E.finally` putMVar lock ()
     return lock
 
+-- | Wait until a 'boundWorder' has finished.
 waitBoundWorker ∷ Lock → IO ()
 waitBoundWorker = takeMVar
 
-retrieveNFrames ∷ DeviceHandle → EndpointAddress → [Int] → FrameInterval
-                → Timeout → Int → IO [VideoFrame]
+-- | Retrieve n frames from an isochronous endpoint.
+retrieveNFrames ∷ DeviceHandle
+                → EndpointAddress   -- ^ an isochronous endpoint
+                → [Int]             -- ^ size of the packets
+                → FrameInterval
+                → Timeout
+                → Int               -- ^ number of frames
+                → IO [Frame]
 retrieveNFrames devh addr sizes interval timeout nframes = do
-    let ids = ['a'..'j'] -- worker identifiers
+    let nworkers = 6
 
     count ← newMVar 0
     chan  ← newChan
 
-    let readStream idx = retryNTimes 2 $ do
+    let readStream = handleShutdown count $ do
             xs ← readIsochronous devh addr sizes timeout
-            writeChan chan (idx, xs)
+            writeChan chan $ filter ((≥ 12) ∘ B.length) xs
 
             done ← (≥ nframes) `fmap` readMVar count
             if done
                then return () -- end
-               else waitFrameInterval interval ≫ readStream idx -- loop
+               else waitFrameInterval interval ≫ readStream -- loop
 
-    -- launch (length ids) boundWorkers.
-    workers ← mapM (boundWorker ∘ readStream) ids
+    E.bracket
+        -- launch (length ids) boundWorkers.
+        (replicateM nworkers (boundWorker $ readStream))
 
-    E.finally (withUnbufferStdout $ consumeVideoStream [] chan count)
-              (mapM_ waitBoundWorker workers)
+        -- When interrupted/finished, assert the end
+        -- and wait for every background threads.
+        (\workers → do modifyMVar_ count (\_ → return nframes)
+                       mapM_ waitBoundWorker workers)
+
+        -- Do it: retrieved iso-packet frames.
+        (\_ → withUnbufferStdout $ consumeVideoStream [] chan count)
+
 
   where
     consumeVideoStream acc chan count = do
-        (idx, xs) ← readChan chan
-        putStr [idx]
+        xs ← readChan chan
+        putStr "."
 
         -- FIXME: do not recompute stream header each times.
         let newFrames = length ∘ filter isEndOfFrame $ xs
+
         n' ← modifyMVar count $ \n → return (n + newFrames, n + newFrames)
         if n' ≥ nframes
            then return ∘ concat ∘ reverse $ (xs:acc)
            else consumeVideoStream (xs:acc) chan count
 
+    -- When a background worker encounter an exception, just stop
+    -- processing video data by setting (count = nframes).
+    handleShutdown ∷ MVar Int → IO () → IO ()
+    handleShutdown count io = E.catch io (shutdown count)
 
--- | Catch 'IOException' and retry N times.
--- This is an ugly(?) workaround the errno=2 error encountered when
--- requesting read isochronous packets.
---
--- FIXME: does this exception handling must be done inside the
--- System.USB.Base module ?
-retryNTimes ∷ Int → IO α → IO α
-retryNTimes 0 io = io
-retryNTimes n io = E.catch io handle
-  where
-    handle e = case e of
-        IOException _ → threadDelay 5000 ≫ retryNTimes (n - 1) io
-        _             → E.throwIO e
+    shutdown ∷ MVar Int → E.SomeException → IO ()
+    shutdown count _ = modifyMVar_ count (\_ → return nframes)
 
-
+-- | Print a handful bunch of information concerning a video stream.
 printIsoInformations ∷ Int → Int → Int
                      → FrameInterval → CompressionFormat → Int → Int
                      → IO ()
@@ -416,7 +497,7 @@ printIsoInformations xferSize frameSize npackets ival fmt w h = do
     printf "Number of iso packets:     %7d\n"     npackets
     printf "Iso-packets size:          %7d\n"     xferSize
     printf "FrameInterval: (*100ns)    %7d\n"     ival
-    printf "Frames per second:           %3.2f\n" fps
+    printf "Frames per second:           %5.2f\n" fps
     printf "FormatUncompressed:           %s\n"   (show fmt)
     printf "Dimensions:              %9s\n"       dimensions
     printf "----------------------------------\n"
@@ -462,20 +543,21 @@ intervalToFPS x = 10000000 / fromIntegral x
 
 scrTime ∷ B.ByteString → Word32
 scrTime bs =
-    let StreamHeader _ _ _ (Just (t, _)) = extractStreamHeader bs
+    let StreamHeader _ _ (Just (t, _)) = extractStreamHeader bs
     in t
 
 withInterfaceAltSetting ∷ DeviceHandle
                         → InterfaceNumber → InterfaceAltSetting
                         → IO α → IO α
-withInterfaceAltSetting devh iface alt =
+withInterfaceAltSetting devh iface alt io =
     E.bracket_ (setInterfaceAltSetting devh iface alt)
                (setInterfaceAltSetting devh iface 0)
+               (threadDelay 500 ≫ io)
 
 withUnbufferStdout ∷ IO α → IO α
 withUnbufferStdout =
     E.bracket_ (hSetBuffering stdout NoBuffering)
-               (hSetBuffering stdout LineBuffering)
+               (hSetBuffering stdout LineBuffering ≫ putStr "\n")
 
 {----------------------------------------------------------------------
 -- Decoding uncompressed video frames.
@@ -485,7 +567,7 @@ withUnbufferStdout =
 -- frames. That is we skip empty payloads, remove frame headers and
 -- concatenate together the different payloads of a single image frame.
 -- Last but not the least, we assert that every frame as a correct size.
-extractFrames ∷ Int → Int → [B.ByteString] → [B.ByteString]
+extractFrames ∷ Int → Int → [B.ByteString] → [Frame]
 extractFrames w h bs =
     map normalizeSize ∘ groupFrames ∘ removeEmptyPayload $ bs
 
@@ -503,13 +585,13 @@ extractFrames w h bs =
 
         -- add this payload to our current frame.
         | parity ≡ frameParity x
-        ∧ (not $ isEndOfFrame x)     = let payload = B.drop 12 x
+        ∧ (not $ isEndOfFrame x)     = let payload = removeStreamHeader x
                                        in ((payload:frame),acc,parity)
 
         -- add this payload to our current frame.
         -- and flush our current frame to the acc result.
         | parity ≡ frameParity x
-        ∧ isEndOfFrame x             = let payload = B.drop 12 x
+        ∧ isEndOfFrame x             = let payload = removeStreamHeader x
                                            frame' = B.concat
                                                   ∘ reverse
                                                   $ (payload:frame)
@@ -533,20 +615,25 @@ extractFrames w h bs =
 
              EQ → x
 
-frameParity ∷ B.ByteString → StreamHeaderFlag
+removeStreamHeader ∷ B.ByteString → B.ByteString
+removeStreamHeader bs = B.drop l bs
+  where
+    l = fromIntegral $ B.head bs -- bLength is the first byte.
+
+frameParity ∷ B.ByteString → Parity
 frameParity bs =
-    let StreamHeader _ (BitMask xs) _ _ = extractStreamHeader bs
-        parity = if EvenFrame ∈ xs then EvenFrame else OddFrame
+    let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
+        parity = if (FID Even) ∈ xs then Even else Odd
     in parity
 
 isEndOfFrame ∷ B.ByteString → Bool
 isEndOfFrame bs =
-    let StreamHeader _ (BitMask xs) _ _ = extractStreamHeader bs
+    let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
     in EndOfFrame ∈ xs
 
-toggleParity ∷ StreamHeaderFlag → StreamHeaderFlag
-toggleParity EvenFrame = OddFrame
-toggleParity _         = EvenFrame
+toggleParity ∷ Parity → Parity
+toggleParity Even = Odd
+toggleParity _    = Even
 
 {----------------------------------------------------------------------
 -- (Uncompressed) Payload Frame Header.
@@ -557,21 +644,36 @@ toggleParity _         = EvenFrame
 -- See UVC specification 1.0a, table 2-6.
 type SourceClockReference = (Word32, Word16)
 
-data StreamHeader = StreamHeader !Int
-                                 !(BitMask StreamHeaderFlag)
-                                 !(Maybe Word32)
+-- | The source clock time in native device clock units when the raw
+-- frame capture begins. This field may be repeated for multiple payload
+-- transfers comprising a single video frame, with the restriction that
+-- the value shall remain the same throughout that video frame.
+-- /UVC v1.1 only: the PTS is in the same units as specified in the/
+-- /pcCloClockFrequency field of the Video Probe Control response/.
+type PresentationTimeStamp = Word32
+
+-- | Each isopacket payload comes with a header.
+-- See UVC specifications, section 2.4.3.3 /Video and Still Image Payload Headers/
+-- for more information.
+data StreamHeader = StreamHeader !(BitMask StreamHeaderFlag)
+                                 !(Maybe PresentationTimeStamp)
                                  !(Maybe SourceClockReference)
     deriving (Eq, Show, Data, Typeable)
 
+-- | For frame-based formats, this flag toggles between Even and Odd
+-- every time a new video frame begins.
+data Parity = Odd | Even
+    deriving (Eq, Show, Data, Typeable)
+
+-- | See UVC specifications, Table 2-5 /Format of the Payload Header/
+-- for more information.
 data StreamHeaderFlag
-   = OddFrame
-   | EvenFrame
-   | EndOfFrame
-   | PTS
-   | SCR
-   | StillImage
-   | ErrorBit
-   | EndOfHeader
+   = FID Parity   -- ^ Frame ID. Toggles between 'Odd' and 'Even' on each frame.
+   | EndOfFrame   -- ^ set on the last payload of a video/image frame
+   | PTS          -- ^ a 'PresentationTimeStamp' is provided.
+   | SCR          -- ^ a 'SourceClockReference' is provided.
+   | StillImage   -- ^ the following data is a still image frame.
+   | ErrorBit     -- ^ error during the transmission, use a Stream Error Code control to get more information.
    deriving (Eq, Show, Data, Typeable)
 
 instance Serialize (BitMask StreamHeaderFlag) where
@@ -580,28 +682,26 @@ instance Serialize (BitMask StreamHeaderFlag) where
 
 stream_header_bitmask ∷ BitMaskTable StreamHeaderFlag
 stream_header_bitmask =
-    [ (0, OddFrame) -- yes, this is completely arbitrary.
-    , (1, EndOfFrame)
+    [ (1, EndOfFrame)
     , (2, PTS)
     , (3, SCR)
     -- bit 4 is reserved.
     , (5, StillImage)
     , (6, ErrorBit)
-    , (7, EndOfHeader)
+    -- , (7, EndOfHeader) mark the end of the header, reserved for
+    -- future extensions and useless in Haskell.
     ]
 
 unmarshalBFH ∷ Word8 → BitMask StreamHeaderFlag
 unmarshalBFH w8 =
-    let mask@(BitMask xs) = unmarshalBitmask stream_header_bitmask w8
-    -- If OddFrame is not present, add EvenFrame to the set.
-    in if OddFrame ∈ xs
-          then mask
-          else BitMask (EvenFrame:xs)
+    let BitMask xs = unmarshalBitmask stream_header_bitmask w8
+    in if w8 `testBit` 0
+          then BitMask (FID  Odd:xs)
+          else BitMask (FID Even:xs)
 
--- See UVC specifications 1.0a, Table 2.2.
 parseStreamHeader ∷ Get.Get StreamHeader
 parseStreamHeader = do
-    bLength ← fromIntegral `fmap` Get.getWord8
+    Get.skip 1 -- skipping bLength
     bfh@(BitMask xs) ← unmarshalBFH `fmap` Get.getWord8
     mPTS ← if PTS ∈ xs
                 then Just `fmap` Get.getWord32le
@@ -612,19 +712,22 @@ parseStreamHeader = do
                         return $ Just (x0, x1)
                 else return Nothing
 
-    return $ StreamHeader bLength bfh mPTS mSCR
+    return $ StreamHeader bfh mPTS mSCR
 
 instance Serialize StreamHeader where
     put = (⊥)
     get = parseStreamHeader
 
+-- See UVC specifications 1.0a, Table 2.2.
+-- FIXME: do not export ?
 extractStreamHeader ∷ B.ByteString → StreamHeader
-extractStreamHeader bs = runGetExact (B.take 12 bs)
+extractStreamHeader bs = runGetExact bs
 
 runGetExact ∷ Serialize a ⇒ B.ByteString → a
 runGetExact bs =
-    let Right a = Get.runGet get bs
-    in a
+    case Get.runGet get bs of
+         Right a → a
+         Left s  → error $ "runGetExact: " ⧺ s
 
 {----------------------------------------------------------------------
 -- Configuring the video device.
@@ -744,7 +847,7 @@ customProbeCommitControl video idx =
         , pcMaxPayloadTransferSize = 0
         }
 
--- | Select the recommanded uncompressed frame.
+-- | Select the recommended uncompressed frame.
 defaultProbeCommitControl ∷ VideoDevice → ProbeCommitControl
 defaultProbeCommitControl video =
     let format = getFormatUncompressed video
@@ -764,6 +867,8 @@ simplestProbeCommitControl video =
 
     in customProbeCommitControl video (fuFrameIndex frame)
 
+-- | Get the one (and unique?) uncompressed format video streaming
+-- descriptor.
 getFormatUncompressed ∷ VideoDevice → VSDescriptor
 getFormatUncompressed video =
     let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
@@ -771,6 +876,7 @@ getFormatUncompressed video =
          Nothing → error "No FormatUncompressed descriptor !"
          Just x  → x
 
+-- | Get every uncompressed frames video streaming descriptors.
 getFramesUncompressed ∷ VideoDevice → [VSDescriptor]
 getFramesUncompressed video =
     let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
@@ -824,8 +930,8 @@ tryPCControl video devh ctrl = do
 -- For now, we will just try to get the smallest data stream.
 -- FIXME: handle more complex cases.
 --
--- See UVC specifications 1.0a, Section 4.3.1.1 Video Prove and Commit
--- Control for more information.
+-- See UVC specifications 1.0a, Section 4.3.1.1
+-- /Video Prove and Commit Control/ for more information.
 negotiatePCControl ∷ VideoDevice → DeviceHandle → ProbeCommitControl
                    → IO ProbeCommitControl
 negotiatePCControl video devh ctrl0 = do
@@ -1045,6 +1151,7 @@ getVideoInterfaces dev =
   where
     videoClass = CC_VIDEO
 
+-- | Check if an USB device has an USB video function interface.
 hasVideoInterface ∷ Device → Bool
 hasVideoInterface = not ∘ null ∘ getVideoInterfaces
 
@@ -1287,6 +1394,7 @@ safeBoundParser size parser = do
 
 -- See USB Video Class 1.0a specifications, section 3.7.
 
+{-
 -- XXX: data structure not used.
 -- VideoControl:
 -- ⋅ control endpoint @ 0x00
@@ -1297,17 +1405,17 @@ data VideoControl = VideoControl
    , vcStatusEndpoint  ∷ (Maybe EndpointDesc)
    , vcDescriptor      ∷ VideoControlDesc
    } deriving (Eq, Show, Data, Typeable)
+-}
 
 data VideoControlDesc = VideoControlDesc
     { vcdUVC             ∷ ReleaseNumber
-    , vcdClockFrequency  ∷ Int -- in Hertz (deprecated in the specs).
-    , vcdInCollection    ∷ Int
-    , vcdInterfaces      ∷ [Int]
+    , vcdClockFrequency  ∷ Int -- ^ in Hertz (deprecated in the specs).
+    , vcdStreamIfaces    ∷ [InterfaceNumber]
     , vcdComponentDescs  ∷ [ComponentDesc]
     , vcdInterfaceNumber ∷ InterfaceNumber
    } deriving (Eq, Show, Data, Typeable)
 
--- | Compononent := Terminal ∨ Unit
+-- | Compononent <- Terminal | Unit
 type ComponentID = Word8
 
 data ComponentDesc
@@ -1502,6 +1610,11 @@ video_standards_bitmask =
 unmarshalVideoStandards ∷ Bits α ⇒ α → BitMask VideoStandard
 unmarshalVideoStandards = unmarshalBitmask video_standards_bitmask
 
+-- | Read the extra information of the video control interface
+-- descriptor and extract every sub-video control descriptors.
+--
+-- See Section 3.7 /VideoControl Interface Descriptors/ of the UVC
+-- specs.
 extractVideoControlDesc ∷ Interface → VideoControlDesc
 extractVideoControlDesc iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
@@ -1513,15 +1626,14 @@ extractVideoControlDesc iface =
 
 parseVCHeader ∷ InterfaceNumber → Get.Get VideoControlDesc
 parseVCHeader ifaceNumber = do
-    _                  ← Get.getWord8 -- skip bLength
+    Get.skip 1 -- skip bLength
     bDescriptorType    ← Get.getWord8
     bDescriptorSubType ← Get.getWord8
     bcdUVC             ← unmarshalReleaseNumber `fmap` Get.getWord16le
-    _                  ← Get.getWord16le -- skip wTotalLength
+    Get.skip 2 -- skip wTotalLength
     dwClockFrequency   ← fromIntegral `fmap` Get.getWord32le
     bInCollection      ← fromIntegral `fmap` Get.getWord8
-    baInterfaceNrs     ← replicateM bInCollection
-                                    (fromIntegral `fmap` Get.getWord8)
+    baInterfaceNrs     ← replicateM bInCollection Get.getWord8
 
     components ← parseVCComponents []
 
@@ -1531,8 +1643,7 @@ parseVCHeader ifaceNumber = do
      else return $ VideoControlDesc
                 { vcdUVC             = bcdUVC
                 , vcdClockFrequency  = dwClockFrequency
-                , vcdInCollection    = bInCollection
-                , vcdInterfaces      = baInterfaceNrs
+                , vcdStreamIfaces    = baInterfaceNrs
                 , vcdComponentDescs  = components
                 , vcdInterfaceNumber = ifaceNumber
                 }
@@ -1715,7 +1826,7 @@ data VSDescriptor
            , ihEndpointAddress         ∷ !EndpointAddress
            , ihInfo                    ∷ !(BitMask VSCapability)
            , ihTerminalLink            ∷ !Word8
-           , ihStillCaptureMethod      ∷ !Word8
+           , ihStillCaptureMethod      ∷ !StillCaptureMethod
            , ihTriggerSupport          ∷ !Bool
            , ihTriggerUsage            ∷ !TriggerUsage
            , ihControls                ∷ ![BitMask VSControl]
@@ -1755,9 +1866,10 @@ data VSDescriptor
    deriving (Eq, Show, Data, Typeable)
 
 -- | Method of still image capture supported as describe in USB Video
--- Class specification v1.0a, section 2.4.2.4 "Still Image Capture".
+-- Class specification v1.0a, section 2.4.2.4 /Still Image Capture/.
 type StillCaptureMethod = Word8
 
+-- | In units of 100ns.
 type FrameInterval = Word32
 type FormatIndex = Word8
 type FrameIndex = Word8
@@ -1816,9 +1928,7 @@ data CompressionFormat
 
 unmarshalGuidFormat ∷ B.ByteString → CompressionFormat
 unmarshalGuidFormat bs | GUID bs ≡ guid_YUY2  = YUY2
-                       | GUID bs ≡ guid_YUY2' = YUY2
                        | GUID bs ≡ guid_NV12  = NV12
-                       | GUID bs ≡ guid_NV12' = NV12
                        | otherwise = UnknownCompressionFormat (GUID bs)
 
 data InterlaceFlag
@@ -1915,6 +2025,11 @@ data MatrixCoefficients
 unmarshalMatrixCoefficients ∷ Word8 → MatrixCoefficients
 unmarshalMatrixCoefficients = genToEnum
 
+-- | Read the extra information of the video streaming interface
+-- descriptor and extract every sub-video streaming descriptors.
+--
+-- See Section 3.9 /VideoStreaming Interface Descriptors/ of the UVC
+-- specs.
 extractVideoStreamDesc ∷ Interface → VideoStreamingDesc
 extractVideoStreamDesc iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
@@ -1923,8 +2038,8 @@ extractVideoStreamDesc iface =
         Right xs = Get.runGet (parseVideoStreamDescs []) extra
     in VideoStreamingDesc xs number
 
--- | Read the extra information of the video streaming interface
--- descriptor and extract every sub-video streaming descriptors.
+-- | Begin to read a Video Streaming Descriptor and dispatch to the
+-- right specialised parser.
 parseVideoStreamDescs ∷ [VSDescriptor] → Get.Get [VSDescriptor]
 parseVideoStreamDescs acc = do
     atEnd ← Get.isEmpty

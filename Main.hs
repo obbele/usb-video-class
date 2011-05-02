@@ -23,6 +23,14 @@ import Prelude.Unicode          ( (∧), (≡), (∘) )
 -- USB operations.
 ----------------------------------------------------------------------}
 
+-- | Parse command line arguments.
+--
+-- * if @video@ is given, run 'writeRawDataToDisk';
+--
+-- * if @images@ is given, run 'writeBMPImages';
+--
+-- * otherwise, run 'inspectData';
+--
 main ∷ IO ()
 main = do
     args ← getArgs
@@ -33,14 +41,16 @@ main = do
 
     catchCommonUSBException action
 
+-- | Write raw YUY2\/NV12 content to a file @\/tmp\/uvc_WxH.yuy2@ where
+-- @W@ is the width and @H@ the height.
 writeRawDataToDisk ∷ IO ()
 writeRawDataToDisk = do
-    VideoPipe _ w h xs ← testISO
-    let frames = extractFrames w h $ xs
-        filename = printf "/tmp/uvc_%dx%d.yuy2" w h
+    VideoPipe _ w h frames ← testISO
+    let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
     B.writeFile filename (B.concat frames)
 
+-- | Print the 'StreamHeader' of every retrieved iso-packet.
 inspectData ∷ IO ()
 inspectData = do
     VideoPipe _ _ _ xs ← testISO
@@ -50,10 +60,12 @@ inspectData = do
     inspectStreamHeader packet =
         printf "[%d] %s\n" (B.length packet) (show $ extractStreamHeader packet)
 
+-- | Convert an YUY2 raw stream to a set of RGBA 'BMP' files.
+-- This function is not optimised and consume /a lot/ of CPU ressources.
 writeBMPImages ∷ IO ()
 writeBMPImages = do
-    VideoPipe _ w h xs ← testISO
-    let bitmaps = map (yuy2ToBMP w h) ∘ extractFrames w h $ xs
+    VideoPipe _ w h frames ← testISO
+    let bitmaps = map (yuy2ToBMP w h) frames
     foo (0 ∷ Int) bitmaps
     return ()
 
@@ -65,6 +77,8 @@ writeBMPImages = do
         writeBMP filename x
         foo (i+1) xs
 
+-- | Warn the user if the USB device is not accessible due to missing
+-- file access permissions.
 catchCommonUSBException ∷ IO α → IO α
 catchCommonUSBException io =
     E.catch io handle
@@ -80,6 +94,7 @@ catchCommonUSBException io =
 -- Searching for a USB Video Class device.
 ----------------------------------------------------------------------}
 
+-- | Handling EventManager errors.
 handleEMErrors ∷ USBException → IO ()
 handleEMErrors e = print $ "EVENT MANAGER ERROR: " ⧺ show e
 
@@ -98,12 +113,14 @@ findVideoDevice = initCtx ≫= getDevices ≫= \devices →
 
   --where predicate := isMyVideoDevice isMy2ndVideoDevice hasVideoInterface
 
+-- | Retrieve Philips (or NXP) SPC 1000NC PC Camera.
 isMyVideoDevice ∷ Device → Bool
 isMyVideoDevice dev = deviceVendorId  devDesc ≡ 0x0471
                     ∧ deviceProductId devDesc ≡ 0x0332
   where
     devDesc = deviceDesc dev
 
+-- | Retrieve IMC Networks camera.
 isMy2ndVideoDevice ∷ Device → Bool
 isMy2ndVideoDevice dev = deviceVendorId  devDesc ≡ 0x13d3
                        ∧ deviceProductId devDesc ≡ 0x5130
@@ -114,6 +131,7 @@ isMy2ndVideoDevice dev = deviceVendorId  devDesc ≡ 0x13d3
 -- USB Video Class (Cheap) Implementation.
 ----------------------------------------------------------------------}
 
+-- | Run 'testVIA', 'testVC', 'testVS' and 'testProbe'∘
 tests ∷ IO ()
 tests = do
     testVIA
@@ -122,13 +140,13 @@ tests = do
     testProbe
     return ()
 
--- Testing if we can parse the extra bits in the video configuration
+-- | Testing if we can parse the extra bits in the video configuration
 -- descriptor.
 testVIA ∷ IO VideoDevice
 testVIA = findVideoDevice ≫= getVideoDevice
 
--- Testing if we can parse the extra bits in the video control interface
--- descriptor.
+-- | Testing if we can parse the extra bits in the video control
+-- interface descriptor.
 testVC ∷ IO [ComponentDesc]
 testVC = do
     video ← getVideoDevice =≪ findVideoDevice
@@ -137,7 +155,7 @@ testVC = do
     putStrLn "----\n----\n----"
     return components
 
--- Testing if we can parse the extra bits in the first video streaming
+-- | Testing if we can parse the extra bits in the first video streaming
 -- interface descriptor.
 testVS ∷ IO [VSDescriptor]
 testVS = do
@@ -147,12 +165,13 @@ testVS = do
     putStrLn "----\n----\n----"
     return xs
 
--- Testing if we can negotiate some control sets with the device.
+-- | Testing if we can negotiate some control sets with the device.
 testProbe ∷ IO ProbeCommitControl
 testProbe = findVideoDevice ≫= getVideoDevice ≫= \video →
     withVideoDeviceHandle video $ \devh →
         negotiatePCControl video devh (simplestProbeCommitControl video)
 
+-- | Testing the 'readVideoData' function to get raw video frames.
 testISO ∷ IO VideoPipe
 testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
