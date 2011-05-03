@@ -27,9 +27,9 @@ import Prelude.Unicode          ( (∧), (≡), (∘) )
 
 -- | Parse command line arguments.
 --
--- * if @video@ is given, run 'writeRawDataToDisk';
+-- * if @saveraw@ is given, run 'writeRawDataToDisk';
 --
--- * if @images@ is given, run 'writeBMPImages';
+-- * if @savebmp@ is given, run 'writeBMPImages';
 --
 -- * otherwise, run 'inspectData';
 --
@@ -37,8 +37,8 @@ main ∷ IO ()
 main = do
     args ← getArgs
     let action = case args of
-         ("video":_)  → writeRawDataToDisk
-         ("images":_) → writeBMPImages
+         ("saveraw":_)  → writeRawDataToDisk
+         ("savebmp":_) → writeBMPImages
          _            → inspectData
 
     catchCommonUSBException action
