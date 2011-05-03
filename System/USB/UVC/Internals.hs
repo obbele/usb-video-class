@@ -400,6 +400,15 @@ readVideoData video devh ctrl nframes timeout = do
                  npackets = if ratio > 64 then 64 else 1 + ceiling ratio
                  sizes = replicate npackets transferSize
 
+                 -- ajusting the interval according to the actual number
+                 -- of packets.
+                 isopayload = npackets * transferSize
+                 ratio' ∷ Double
+                 ratio' = fromIntegral isopayload
+                        * fromIntegral interval
+                        / fromIntegral frameSize
+                 interval' = round ratio' + 1
+
                  -- Additionnal information.
                  fmtDsc = getFormatUncompressed video
                  format = fFormat fmtDsc
@@ -410,12 +419,11 @@ readVideoData video devh ctrl nframes timeout = do
                         ∘ getFramesUncompressed
                         $ video
 
-
              printIsoInformations transferSize frameSize npackets
                                   interval format w h
 
              frames ← withInterfaceAltSetting devh interfaceN x $
-                 retrieveNFrames devh addr sizes interval timeout nframes
+                 retrieveNFrames devh addr sizes interval' timeout nframes
 
              -- we cheat here since our headers have a SCR field.
              let xs = sortBy (compare `on` scrTime) frames
@@ -509,7 +517,7 @@ printIsoInformations xferSize frameSize npackets ival fmt w h = do
     printf "Number of iso packets:     %7d\n"     npackets
     printf "Iso-packets size:          %7d\n"     xferSize
     printf "FrameInterval: (*100ns)    %7d\n"     ival
-    printf "Frames per second:           %5.2f\n" fps
+    printf "Frames per second:          %6.2f\n"  fps
     printf "FormatUncompressed:           %s\n"   (show fmt)
     printf "Dimensions:              %9s\n"       dimensions
     printf "----------------------------------\n"
