@@ -340,6 +340,7 @@ type Frame  = B.ByteString
 -- uncompressed video stream.
 data VideoPipe = VideoPipe
     { vpFormat ∷ CompressionFormat
+    , vpColors ∷ Maybe VSDescriptor
     , vpWidth  ∷ Width
     , vpHeight ∷ Height
     , vpFrames ∷ [Frame] -- FIXME: use a Chan instead of a (lazy?) list.
@@ -347,8 +348,12 @@ data VideoPipe = VideoPipe
     } deriving (Eq, Data, Typeable)
 
 instance Show VideoPipe where
-    show x = printf "VideoPipe { vpFormat = %s, vpWidth = %d, vpHeight = %d, vpFrames = [%d frames] }"
+    show x = printf "VideoPipe { vpFormat = %s, \\
+                    \vpColors = %s, \\
+                    \vpWidth = %d, vpHeight = %d, \\
+                    \vpFrames = [%d frames] }"
                     (show $ vpFormat x)
+                    (show $ vpColors x)
                     (vpWidth x)
                     (vpHeight x)
                     (length $ vpFrames x)
@@ -391,9 +396,9 @@ readVideoData video devh ctrl nframes timeout = do
                  sizes = replicate npackets transferSize
 
                  -- Additionnal information.
-                 format = fuFormat
-                        ∘ getFormatUncompressed
-                        $ video
+                 fmtDsc = getFormatUncompressed video
+                 format = fuFormat fmtDsc
+                 colors = findColorMatchingDesc video fmtDsc
                  (w,h)  = (fuWidth &&& fuHeight)
                         ∘ head
                         ∘ filter (\f → fuFrameIndex f ≡ pcFrameIndex ctrl)
@@ -407,10 +412,12 @@ readVideoData video devh ctrl nframes timeout = do
              frames ← withInterfaceAltSetting devh interfaceN x $
                  retrieveNFrames devh addr sizes interval timeout nframes
 
+             -- we cheat here since our headers have a SCR field.
              let xs = sortBy (compare `on` scrTime) frames
 
              return $ VideoPipe
                     { vpFormat = format
+                    , vpColors = colors
                     , vpWidth  = w
                     , vpHeight = h
                     , vpFrames = extractFrames w h xs
@@ -507,6 +514,30 @@ printIsoInformations xferSize frameSize npackets ival fmt w h = do
 
     dimensions ∷ String
     dimensions = printf "%dx%d" w h
+
+-- FIXME: handle compressed format descriptors.
+isFormatDescriptor ∷ VSDescriptor → Bool
+isFormatDescriptor (FormatUncompressed _ _ _ _ _ _ _ _ _) = True
+isFormatDescriptor _                                      = False
+
+-- FIXME: re-organise VSDescriptors and put ColorMatchingDesc inside the
+-- FormatFOODescriptor∘
+findColorMatchingDesc ∷ VideoDevice → VSDescriptor → Maybe VSDescriptor
+findColorMatchingDesc video descriptor =
+    -- From the UVC specs:
+    -- A color matching descriptor is an optional descriptor used to
+    -- describe the color profile of the video data in an unambiguous
+    -- way. Only one instance is allowed for a given format and if
+    -- present, the Color Matching descriptor shall be placed following
+    -- the Video and Still Image Frame descriptors for that format.
+    --
+    let descriptors = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
+        xs = takeWhile (not ∘ isFormatDescriptor)
+           ∘ tail
+           ∘ dropWhile (≠ descriptor)
+           $ descriptors
+
+    in find isColorMatching xs
 
 -- | Search a (stream) interface and select the correct alt-setting for
 -- which the isochronous endpoint has a payload equal to xferSize.

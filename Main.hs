@@ -46,7 +46,7 @@ main = do
 -- @W@ is the width and @H@ the height.
 writeRawDataToDisk ∷ IO ()
 writeRawDataToDisk = do
-    VideoPipe _ w h frames ← testISO
+    VideoPipe _ _ w h frames ← testISO
     let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
     B.writeFile filename (B.concat frames)
@@ -54,7 +54,7 @@ writeRawDataToDisk = do
 -- | Print the 'StreamHeader' of every retrieved iso-packet.
 inspectData ∷ IO ()
 inspectData = do
-    VideoPipe _ _ _ xs ← testISO
+    VideoPipe _ _ _ _ xs ← testISO
     mapM_ inspectStreamHeader xs
 
   where
@@ -65,7 +65,7 @@ inspectData = do
 -- This function is not optimised and consume /a lot/ of CPU ressources.
 writeBMPImages ∷ IO ()
 writeBMPImages = do
-    VideoPipe fmt w h frames ← testISO
+    VideoPipe fmt _ w h frames ← testISO
     let bitmaps = case fmt of
             NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
             YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
