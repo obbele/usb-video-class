@@ -12,6 +12,7 @@ import System.USB.UVC.Internals
 import BMP                      ( rgbaToBMP )
 import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
 
+import Control.Monad
 import Data.List                ( find )
 import Text.Printf              ( printf )
 import System.Environment       ( getArgs )
@@ -161,13 +162,18 @@ testVC = do
 
 -- | Testing if we can parse the extra bits in the first video streaming
 -- interface descriptor.
-testVS ∷ IO [VSDescriptor]
+testVS ∷ IO [VSInterface]
 testVS = do
     video ← getVideoDevice =≪ findVideoDevice
-    let xs = vsdStreamDescs ∘ head ∘ videoStrDescs $ video
-    mapM_ print xs
+    let ifaces = vsdInterfaces ∘ head ∘ videoStrDescs $ video
+    forM_ ifaces $ \iface → do
+        print iface
+        forM_ (vsiFormats iface) $ \format → do
+            print format
+            forM_ (fFrames format) print
+
     putStrLn "----\n----\n----"
-    return xs
+    return ifaces
 
 -- | Testing if we can negotiate some control sets with the device.
 testProbe ∷ IO ProbeCommitControl
