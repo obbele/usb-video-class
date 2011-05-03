@@ -1,16 +1,14 @@
 #!/bin/sh -e
 
-# Clean
-rm -fr /tmp/uvc_*.yuy2
+if [ x"$1" = "x" ];then
+	echo 2>&1 "Usage: ./read_video.sh filename.yuy2"
+	exit 1
+fi
 
-# Run haskell
-./dist/build/test/test saveraw +RTS -N3
-
-
+FILE="$1"
 SIZE=`ls -1 /tmp/uvc_*.yuy2 | grep -oE '[0-9]+x[0-9]+'`
 WIDTH=`echo $SIZE | cut -d'x' -f1`
 HEIGHT=`echo $SIZE | cut -d'x' -f2`
-FILE=`echo /tmp/uvc_*.yuy2`
 
 # Try to use gstreamer or ffplay
 gst-launch \

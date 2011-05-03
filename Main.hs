@@ -5,12 +5,8 @@ module Main where
 import qualified Control.Exception as E
 import qualified Data.ByteString   as B
 
-import Codec.BMP                ( writeBMP )
-
 import System.USB
 import System.USB.UVC.Internals
-import BMP                      ( rgbaToBMP )
-import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
 
 import Control.Monad
 import Data.List                ( find )
@@ -29,17 +25,25 @@ import Prelude.Unicode          ( (∧), (≡), (∘) )
 --
 -- * if @saveraw@ is given, run 'writeRawDataToDisk';
 --
--- * if @savebmp@ is given, run 'writeBMPImages';
+-- * if @inspect@ is given, run 'inspectData';
 --
--- * otherwise, run 'inspectData';
+-- * otherwise, run 'testVideoStream';
 --
 main ∷ IO ()
 main = do
+    let usage = "Usage: test [options]\n\
+                \\t-h|--help) display this help\n\
+                \\tsaveraw)   get default video stream and save to disk\n\
+                \\tinspect)   get default video stream and display headers\n\
+                \\t[default]  prompt for configuration and save to disk\n"
+
     args ← getArgs
     let action = case args of
-         ("saveraw":_)  → writeRawDataToDisk
-         ("savebmp":_) → writeBMPImages
-         _            → inspectData
+         ("-h":_)      → putStr usage
+         ("--help":_)  → putStr usage
+         ("saveraw":_) → writeRawDataToDisk
+         ("inspect":_) → inspectData
+         _             → testVideoStream
 
     catchCommonUSBException action
 
@@ -61,26 +65,6 @@ inspectData = do
   where
     inspectStreamHeader packet =
         printf "[%d] %s\n" (B.length packet) (show $ extractStreamHeader packet)
-
--- | Convert an YUY2 raw stream to a set of RGBA 'BMP' files.
--- This function is not optimised and consume /a lot/ of CPU ressources.
-writeBMPImages ∷ IO ()
-writeBMPImages = do
-    VideoPipe fmt _ w h frames ← testISO
-    let bitmaps = case fmt of
-            NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
-            YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
-            _    → error "Unknown format"
-    foo (0 ∷ Int) bitmaps
-    return ()
-
-  where
-    foo _ []     = return ()
-    foo i (x:xs) = do
-        let filename = printf "/tmp/uvc_%03d.bmp" i
-        printf "writing file [%s]\n" filename
-        writeBMP filename x
-        foo (i+1) xs
 
 -- | Warn the user if the USB device is not accessible due to missing
 -- file access permissions.
@@ -111,7 +95,7 @@ initCtx = do
 
 findVideoDevice ∷ IO Device
 findVideoDevice = initCtx ≫= getDevices ≫= \devices →
-    case find isMyVideoDevice devices of
+    case find hasVideoInterface devices of
          Nothing → error "Video device not found !"
          Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
                       return d
@@ -190,3 +174,33 @@ testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
   where
     nframes = 100
     timeout = noTimeout
+
+-- | Interactively ask for the frame index and the number of frames.
+testVideoStream ∷ IO ()
+testVideoStream = findVideoDevice ≫= getVideoDevice ≫= \video →
+  withVideoDeviceHandle video $ \devh → do
+    print video
+
+    putStrLn "Available frames:"
+    mapM_ printFrame (fFrames ∘ getFormatUncompressed $ video)
+    putStrLn "Enter the frame index number:"
+    idx ← read `fmap` getLine
+
+    putStrLn "Enter the number of desired frames:"
+    nframes ← read `fmap` getLine
+
+    ctrl ← negotiatePCControl video devh (customProbeCommitControl video idx)
+    VideoPipe _ _ w h frames ← readVideoData video devh ctrl nframes timeout
+
+    let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
+    printf "writing raw video flux to [%s]\n" filename
+    B.writeFile filename (B.concat frames)
+
+  where
+    timeout = noTimeout
+
+    printFrame ∷ VSFrame → IO String
+    printFrame f = printf "UncompressedFrame [%d] @ %dx%d\n" idx w h
+      where idx = fFrameIndex f
+            w = fWidth f
+            h = fHeight f

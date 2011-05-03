@@ -25,6 +25,10 @@ source-repository head
   Type:     git
   Location: git://github.com/obbele/usb-video-class.git
 
+Flag BMP
+  description: Build the BMP test program
+  default:     False
+
 executable test
   GHC-Options: -Wall
   GHC-Options: -fno-warn-unused-do-bind
@@ -37,9 +41,29 @@ executable test
                , text                 >= 0.5   && < 0.12
                , usb                  >= 1.0
                , cereal               >= 0.3
-               , bmp                  >= 1.1
 
   main-is:       Main.hs
+  other-modules: System.USB.UVC.Internals
+               , Utils
+               , ExtraUtils
+               , Codec.UVC.RGBA
+               , BMP
+
+
+executable test_bmp
+  GHC-Options: -Wall
+  GHC-Options: -fno-warn-unused-do-bind
+  GHC-Options: -threaded
+  GHC-Options: -rtsopts
+
+  build-depends:  bmp >= 1.1
+
+  if flag(BMP)
+      Buildable: True
+  else
+      Buildable: False
+
+  main-is:       BMP.hs
   other-modules: System.USB.UVC.Internals
                , Utils
                , ExtraUtils

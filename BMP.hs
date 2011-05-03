@@ -1,12 +1,56 @@
 {-# LANGUAGE UnicodeSyntax #-}
 
 -- | Handling RGBA images with the "Codec.BMP" module.
-module BMP ( rgbaToBMP ) where
+module Main where
 
 import qualified Data.ByteString   as B
 
-import Codec.BMP                ( BMP, packRGBA32ToBMP )
-import System.USB.UVC.Internals ( Width, Height, Frame )
+import System.USB
+import System.USB.UVC.Internals
+import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
+
+import Codec.BMP                ( BMP, packRGBA32ToBMP, writeBMP )
+
+import Data.List                ( find )
+import Text.Printf              ( printf )
+import Control.Monad.Unicode    ( (≫=) )
+import Data.List.Unicode        ( (⧺) )
+import Prelude.Unicode          ( (∘) )
+
+main ∷ IO ()
+main = writeBMPImages
+
+-- | Convert an YUY2 raw stream to a set of RGBA 'BMP' files.
+-- This function is not optimised and consume /a lot/ of CPU ressources.
+writeBMPImages ∷ IO ()
+writeBMPImages = findVideoDevice ≫= getVideoDevice ≫= \video →
+  withVideoDeviceHandle video $ \devh → do
+    ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
+    VideoPipe fmt _ w h frames ← readVideoData video devh ctrl nframes timeout
+    let bitmaps = case fmt of
+            NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
+            YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
+            _    → error "Unknown format"
+    foo (0 ∷ Int) bitmaps
+    return ()
+
+  where
+    nframes = 10
+    timeout = noTimeout
+
+    foo _ []     = return ()
+    foo i (x:xs) = do
+        let filename = printf "/tmp/uvc_%03d.bmp" i
+        printf "writing file [%s]\n" filename
+        writeBMP filename x
+        foo (i+1) xs
+
+findVideoDevice ∷ IO Device
+findVideoDevice = newCtx ≫= getDevices ≫= \devices →
+    case find hasVideoInterface devices of
+         Nothing → error "Video device not found !"
+         Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
+                      return d
 
 -- | Convert a raw RGBA frame of dimension @Width@x@Height@ to an RGBA
 -- 'BMP' image.
