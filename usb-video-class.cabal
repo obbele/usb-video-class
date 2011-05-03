@@ -46,8 +46,6 @@ executable test
   other-modules: System.USB.UVC.Internals
                , Utils
                , ExtraUtils
-               , Codec.UVC.RGBA
-               , BMP
 
 
 executable test_bmp
@@ -68,4 +66,3 @@ executable test_bmp
                , Utils
                , ExtraUtils
                , Codec.UVC.RGBA
-               , BMP
