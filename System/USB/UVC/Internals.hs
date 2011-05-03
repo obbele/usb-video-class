@@ -27,6 +27,7 @@ module System.USB.UVC.Internals
     , VSFormat(..)
     , VSFrame(..)
     , ColorMatching(..)
+    , StillImageFrame(..)
     , VSCapability(..)
     , TriggerUsage(..)
     , VSControl(..)
@@ -109,6 +110,7 @@ import Data.Serialize          ( Serialize(..) )
 
 -- Private base system.
 import Control.Arrow           ( (&&&) )
+import Control.Applicative     ( (<|>) )
 import Control.Monad           ( replicateM_, replicateM, when )
 import Control.Concurrent      ( threadDelay, forkIO )
 import Control.Concurrent.Chan ( newChan, readChan, writeChan )
@@ -820,12 +822,8 @@ probeCommitSet video devh action attr ctrl =
                          bRequest wValue wIndex bytestring timeout
 
 isFormatUncompressed ∷ VSFormat → Bool
-isFormatUncompressed (FormatUncompressed _ _ _ _ _ _ _ _ _ _ _) = True
-isFormatUncompressed _                                          = False
-
-isFrameUncompressed ∷ VSFrame → Bool
-isFrameUncompressed (FrameUncompressed _ _ _ _ _ _ _ _ _) = True
-isFrameUncompressed _                                     = False
+isFormatUncompressed (FormatUncompressed _ _ _ _ _ _ _ _ _ _ _ _) = True
+isFormatUncompressed _                                            = False
 
 -- | Select an uncompressed frame by its index number.
 customProbeCommitControl ∷ VideoDevice → FrameIndex → ProbeCommitControl
@@ -891,8 +889,7 @@ getFormatUncompressed video =
 
 -- | Get every uncompressed frames video streaming descriptors.
 getFramesUncompressed ∷ VideoDevice → [VSFrame]
-getFramesUncompressed =
-    filter isFrameUncompressed ∘ fFrames ∘ getFormatUncompressed
+getFramesUncompressed = fFrames ∘ getFormatUncompressed
 
 -- | Set the given 'ProbeCommitControl'. If the device answers with an
 -- identical control set, commits it and returns @Right control@, else
@@ -938,9 +935,6 @@ tryPCControl video devh ctrl = do
 -- | This function will try to simply negotiate the format, frame, video
 -- characteristics and USB bandwith used in future asynchronous
 -- communication.
---
--- For now, we will just try to get the smallest data stream.
--- FIXME: handle more complex cases.
 --
 -- See UVC specifications 1.0a, Section 4.3.1.1
 -- /Video Prove and Commit Control/ for more information.
@@ -1267,22 +1261,37 @@ instance Show VideoDevice where
                                \ --------- bits-per-pixel: %d\n\\
                                \ --------- flags: %s\n\\
                                \%s\\
+                               \%s\\
                                \%s"
                                (fFormatIndex f)
                                (show $ fFormat f)
                                (fBitsPerPixel f)
                                (show ∘ unBitMask $ fInterlaceFlags f)
-                               (frames $ fFrames f)
+                               (fFrames f ≫= pframe)
+                               (sframe $ fStillImageFrame f)
                                (colors $ fColors f)
 
         -- Pretty printing uncompressed frames.
-        frames   ∷ [VSFrame] → String
-        frames   = concatMap pframe
-                 ∘ filter isFrameUncompressed
+        pframe   ∷ VSFrame → String
         pframe   = \f → printf " -------- FrameUncompressed[%d] @ %dx%d\n"
                                (fFrameIndex f)
                                (fWidth f)
                                (fHeight f)
+
+        -- Pretty printing still image frame descriptor.
+        sframe   ∷ Maybe StillImageFrame → String
+        sframe Nothing  = " -------- NoStillImageFrame\n"
+        sframe (Just f) = printf " -------- StillImageFrame\n\\
+                                 \%s\\
+                                 \%s"
+                                (siDimensions f ≫= dimension)
+                                (siCompressions f ≫= compression)
+
+        dimension ∷ (Width, Height) → String
+        dimension (w,h) = printf " ------------ resolution: %dx%d\n" w h
+
+        compression ∷ Int → String
+        compression c = printf " ------------ compression: %dx\n" c
 
         -- Pretty printing color matching descriptors.
         colors   ∷ Maybe ColorMatching → String
@@ -1390,7 +1399,6 @@ boundParser size parser = do
     result ← parser
     end    ← Get.remaining
 
-    --FIXME: let remainingBytes = size - end + start
     let remainingBytes = size - (start - end)
     if remainingBytes ≠ 0
        then Get.skip remainingBytes
@@ -1852,6 +1860,7 @@ data VSFormat
            , fFormatIndex              ∷ !FormatIndex
            , fName                     ∷ !String
            , fFrames                   ∷ [VSFrame]
+           , fStillImageFrame          ∷ Maybe StillImageFrame
            , fColors                   ∷ Maybe ColorMatching
            }
    | FormatUncompressed
@@ -1865,6 +1874,7 @@ data VSFormat
            , fInterlaceFlags           ∷ !(BitMask InterlaceFlag)
            , fCopyProtect              ∷ !Bool
            , fFrames                   ∷ [VSFrame]
+           , fStillImageFrame          ∷ Maybe StillImageFrame
            , fColors                   ∷ Maybe ColorMatching
            }
     deriving (Eq, Show, Data, Typeable)
@@ -1881,6 +1891,14 @@ data VSFrame
            , fMaxVideoFrameBufferSize  ∷ !Int
            , fDefaultFrameInterval     ∷ !FrameInterval
            , fFrameIntervalType        ∷ !FrameIntervalType
+           }
+   deriving (Eq, Show, Data, Typeable)
+
+data StillImageFrame
+   = StillImageFrame
+           { siEndpointAddress         ∷ !EndpointAddress
+           , siDimensions              ∷ ![(Width, Height)]
+           , siCompressions            ∷ ![Int]
            }
    deriving (Eq, Show, Data, Typeable)
 
@@ -2169,22 +2187,17 @@ parseVSFormats (ctrl:ctrls) acc = do
     bLength ← fromIntegral `fmap` Get.getWord8
     bDescriptorType ← Get.getWord8
     bDescriptorSubType ← Get.getWord8
-    bFormatIndex ← Get.getWord8
-    bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
 
     when (bDescriptorType ≠ CS_INTERFACE) $
       error "This is not a Video Streaming interface."
 
     -- remaining size = length - bLength - bDescriptor{,Sub}Type
-    --                - bFormatIndex - bNumFrameDescriptors
-    let size = bLength - 1 - 1 - 1 - 1 - 1
+    let size = bLength - 1 - 1 - 1
 
-    let idx = bFormatIndex
-        n = bNumFrameDescriptors
-        fallback name = parseVSUnknownFormat name idx ctrl n size
+    let fallback name = parseVSUnknownFormat name ctrl size
 
     x ← case bDescriptorSubType of
-          VS_FORMAT_UNCOMPRESSED → parseVSFormatUncompressed idx ctrl n size
+          VS_FORMAT_UNCOMPRESSED → parseVSFormatUncompressed ctrl size
           VS_FORMAT_MJPEG        → fallback "FORMAT_MJPEG"
           VS_FORMAT_MPEG2TS      → fallback "FORMAT_MPEG2TS"
           VS_FORMAT_DV           → fallback "FORMAT_DV"
@@ -2194,47 +2207,48 @@ parseVSFormats (ctrl:ctrls) acc = do
 
     parseVSFormats ctrls (x:acc) -- loop recursion
 
-parseVSUnknownFormat ∷ String → FormatIndex → BitMask VSControl → Int → Int
-                     → Get.Get VSFormat
-parseVSUnknownFormat name idx ctrl nframes size = do
-    _ ← Get.skip size
-    frames ← replicateM nframes parseVSFrame
+parseVSUnknownFormat ∷ String → BitMask VSControl → Int → Get.Get VSFormat
+parseVSUnknownFormat name ctrl size = do
+    bFormatIndex ← Get.getWord8
+    bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
+    Get.skip (size - 2) -- skip the rest of the format header.
+    frames ← replicateM bNumFrameDescriptors parseVSFrame
+    mstillimage ← parseVSStillImageFrame
     mcolors ← parseVSColorMatching
-    return $ UnknownFormatDescriptor ctrl idx name frames mcolors
+    return $ UnknownFormatDescriptor ctrl bFormatIndex name
+                                     frames mstillimage mcolors
 
 -- | Read Uncompressed Video Format Descriptors as specified
 -- in USB Video Class 1.0a / Payload_uncompressed, table 3-1.
-parseVSFormatUncompressed ∷ FormatIndex → BitMask VSControl → Int → Int
-                          → Get.Get VSFormat
-parseVSFormatUncompressed idx ctrl nframes size = do
-    (guid,bps,idx0,arx,ary,bmif,cp) ← boundParser size $ do
-        guidFormat ← unmarshalGuidFormat `fmap` Get.getByteString 16
-        bBitsPerPixel ← fromIntegral `fmap` Get.getWord8
-        bDefaultFrameIndex ← Get.getWord8
-        bAspectRatioX ← fromIntegral `fmap` Get.getWord8
-        bAspectRatioY ← fromIntegral `fmap` Get.getWord8
-        bmInterlaceFlags ← unmarshalInterlaceFlags `fmap` Get.getWord8
-        bCopyProtect ← (≡ 0x01) `fmap` Get.getWord8
+parseVSFormatUncompressed ∷ BitMask VSControl → Int → Get.Get VSFormat
+parseVSFormatUncompressed ctrl size = do
+    bFormatIndex ← Get.getWord8
+    bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
+    guidFormat ← unmarshalGuidFormat `fmap` Get.getByteString 16
+    bBitsPerPixel ← fromIntegral `fmap` Get.getWord8
+    bDefaultFrameIndex ← Get.getWord8
+    bAspectRatioX ← fromIntegral `fmap` Get.getWord8
+    bAspectRatioY ← fromIntegral `fmap` Get.getWord8
+    bmInterlaceFlags ← unmarshalInterlaceFlags `fmap` Get.getWord8
+    bCopyProtect ← (≡ 0x01) `fmap` Get.getWord8
+    Get.skip (size - 24) -- 24 ≡ length consumed by the previous operations.
 
-        return ( guidFormat, bBitsPerPixel, bDefaultFrameIndex
-               , bAspectRatioX, bAspectRatioY, bmInterlaceFlags
-               , bCopyProtect )
-
-    frames ← replicateM nframes parseVSFrame
-    stillframe ← parseVSFrame -- FIXME: remove me !
+    frames ← replicateM bNumFrameDescriptors parseVSFrame
+    mstillframe ← parseVSStillImageFrame
     mcolors ← parseVSColorMatching
 
     return $ FormatUncompressed
            { fControls            = ctrl
-           , fFormatIndex         = idx
-           , fFormat              = guid
-           , fBitsPerPixel        = bps
-           , fDefaultFrameIndex   = idx0
-           , fAspectRatioX        = arx
-           , fAspectRatioY        = ary
-           , fInterlaceFlags      = bmif
-           , fCopyProtect         = cp
-           , fFrames              = reverse (stillframe:frames)
+           , fFormatIndex         = bFormatIndex
+           , fFormat              = guidFormat
+           , fBitsPerPixel        = bBitsPerPixel
+           , fDefaultFrameIndex   = bDefaultFrameIndex
+           , fAspectRatioX        = bAspectRatioX
+           , fAspectRatioY        = bAspectRatioY
+           , fInterlaceFlags      = bmInterlaceFlags
+           , fCopyProtect         = bCopyProtect
+           , fFrames              = reverse frames
+           , fStillImageFrame     = mstillframe
            , fColors              = mcolors
            }
 
@@ -2296,23 +2310,55 @@ parseVSFrameUncompressed size = boundParser size $ do
            , fFrameIntervalType       = frameType
            }
 
+-- Check the next bDescriptorSubType.
+checkNextVSDescriptor ∷ Word8 → Get.Get Bool
+checkNextVSDescriptor subtype =
+     Get.lookAhead (Get.skip 2 ≫ Get.getWord8 ≫= return ∘ (≡ subtype))
+ <|> return False
+
 -- | Read VS Interface Color Matching Descriptors as specified
 -- in USB Video Class 1.0a, table 3-18.
 parseVSColorMatching ∷ Get.Get (Maybe ColorMatching)
-parseVSColorMatching = return Nothing
+parseVSColorMatching = do
+    isColorMatching ← checkNextVSDescriptor VS_COLORFORMAT
+    if not isColorMatching
+       then return Nothing
+       else do
+           bLength ← fromIntegral `fmap` Get.getWord8
+           boundParser (bLength - 1) $ do
+               Get.skip 2 -- skipping bDescriptorType & bDescriptorSubType
+               cp ← unmarshalColorPrimaries `fmap` Get.getWord8
+               tc ← unmarshalTCharacteristics `fmap` Get.getWord8
+               mc ← unmarshalMatrixCoefficients `fmap` Get.getWord8
+               return ∘ Just $ ColorMatching
+                             { cmColorPrimaries          = cp
+                             , cmTransferCharacteristics = tc
+                             , cmMatrixCoefficients      = mc
+                             }
 
-{-
-parseVSColorMatching size = boundParser size $ do
-    bLength ← fromIntegral `fmap` Get.getWord8
-    bDescriptorType ← Get.getWord8
-    bDescriptorSubType ← Get.getWord8
-    bColorPrimaries ← unmarshalColorPrimaries `fmap` Get.getWord8
-    bTransferCharacteristics ← unmarshalTCharacteristics `fmap` Get.getWord8
-    bMatrixCoefficients ← unmarshalMatrixCoefficients `fmap` Get.getWord8
+parseVSStillImageFrame ∷ Get.Get (Maybe StillImageFrame)
+parseVSStillImageFrame = do
+    isStillFrame ← checkNextVSDescriptor VS_STILL_IMAGE_FRAME
+    if not isStillFrame
+       then return Nothing
+       else do
+           bLength ← fromIntegral `fmap` Get.getWord8
+           boundParser (bLength - 1) $ do
+               Get.skip 2 -- skipping bDescriptorType & bDescriptorSubType
+               ep ← unmarshalEndpointAddress `fmap` Get.getWord8
 
-    return $ ColorMatching
-           { cmColorPrimaries          = bColorPrimaries
-           , cmTransferCharacteristics = bTransferCharacteristics
-           , cmMatrixCoefficients      = bMatrixCoefficients
-           }
--}
+               npatterns ← fromIntegral `fmap` Get.getWord8
+               dimensions ← replicateM npatterns $ do
+                   width ← fromIntegral `fmap` Get.getWord16le
+                   height ← fromIntegral `fmap` Get.getWord16le
+                   return (width, height)
+
+               ncompressions ← fromIntegral `fmap` Get.getWord8
+               compressions ← replicateM ncompressions $ do
+                   fromIntegral `fmap` Get.getWord8
+
+               return ∘ Just $ StillImageFrame
+                             { siEndpointAddress = ep
+                             , siDimensions      = dimensions
+                             , siCompressions    = compressions
+                             }
