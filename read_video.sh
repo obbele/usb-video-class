@@ -6,7 +6,7 @@ if [ x"$1" = "x" ];then
 fi
 
 FILE="$1"
-SIZE=`ls -1 /tmp/uvc_*.yuy2 | grep -oE '[0-9]+x[0-9]+'`
+SIZE=`echo $FILE | grep -oE '[0-9]+x[0-9]+'`
 WIDTH=`echo $SIZE | cut -d'x' -f1`
 HEIGHT=`echo $SIZE | cut -d'x' -f2`
 
