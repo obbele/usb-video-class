@@ -90,7 +90,7 @@ handleEMErrors e = print $ "EVENT MANAGER ERROR: " ⧺ show e
 initCtx ∷ IO Ctx
 initCtx = do
     ctx ← newCtx' handleEMErrors
-    setDebug ctx PrintWarnings
+    setDebug ctx PrintInfo
     return ctx
 
 findVideoDevice ∷ IO Device
@@ -120,7 +120,7 @@ isMy2ndVideoDevice dev = deviceVendorId  devDesc ≡ 0x13d3
 -- USB Video Class (Cheap) Implementation.
 ----------------------------------------------------------------------}
 
--- | Run 'testVIA', 'testVC', 'testVS' and 'testProbe'∘
+-- | Run 'testVIA', 'testVC', 'testVS' and 'testProbe'.
 tests ∷ IO ()
 tests = do
     testVIA

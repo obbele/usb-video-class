@@ -26,8 +26,9 @@ writeBMPImages ∷ IO ()
 writeBMPImages = findVideoDevice ≫= getVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
     ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
-    VideoPipe fmt _ w h frames ← readVideoData video devh ctrl nframes timeout
-    let bitmaps = case fmt of
+    VideoPipe fmt _ w h xs ← readVideoData video devh ctrl nframes timeout
+    let frames = reorderFrames w h xs
+        bitmaps = case fmt of
             NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
             YUY2 → map (rgbaToBMP w h ∘ yuy2ToRGBA) frames
             _    → error "Unknown format"
