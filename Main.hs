@@ -62,9 +62,9 @@ inspectData = do
     VideoPipe _ _ _ _ xs ← testISO
     mapM_ inspectStreamHeader xs
 
-  where
-    inspectStreamHeader packet =
-        printf "[%d] %s\n" (B.length packet) (show $ extractStreamHeader packet)
+inspectStreamHeader ∷ Frame → IO String
+inspectStreamHeader packet =
+    printf "[%d] %s\n" (B.length packet) (show $ extractStreamHeader packet)
 
 -- | Warn the user if the USB device is not accessible due to missing
 -- file access permissions.
@@ -170,7 +170,8 @@ testISO ∷ IO VideoPipe
 testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
     ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
-    readVideoData video devh ctrl nframes timeout
+    VideoPipe a b w h frames ← readVideoData video devh ctrl nframes timeout
+    return $ VideoPipe a b w h (reorderFrames w h frames)
   where
     nframes = 100
     timeout = noTimeout
@@ -194,7 +195,7 @@ testVideoStream = findVideoDevice ≫= getVideoDevice ≫= \video →
 
     let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
-    B.writeFile filename (B.concat frames)
+    B.writeFile filename (B.concat ∘ reorderFrames w h $ frames)
 
   where
     timeout = noTimeout

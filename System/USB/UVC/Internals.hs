@@ -78,6 +78,7 @@ module System.USB.UVC.Internals
     -- * Video data streaming
     , VideoPipe(..)
     , readVideoData
+    , reorderFrames
     , intervalToFPS
 
     -- * Common types
@@ -119,7 +120,7 @@ import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, readMVar
 import Data.Bits               ( Bits, testBit, (.|.), shiftL )
 import Data.Data               ( Data )
 import Data.Function           ( on )
-import Data.List               ( find, minimumBy, sortBy, foldl' )
+import Data.List               ( find, minimumBy, foldl' )
 import Data.Maybe              ( catMaybes )
 import Data.Typeable           ( Typeable )
 import Data.Word               ( Word8, Word16, Word32 )
@@ -426,14 +427,14 @@ readVideoData video devh ctrl nframes timeout = do
                  retrieveNFrames devh addr sizes interval' timeout nframes
 
              -- we cheat here since our headers have a SCR field.
-             let xs = sortBy (compare `on` scrTime) frames
+             --let xs = sortBy (compare `on` scrTime) frames
 
              return $ VideoPipe
                     { vpFormat = format
                     , vpColors = colors
                     , vpWidth  = w
                     , vpHeight = h
-                    , vpFrames = extractFrames w h xs
+                    , vpFrames = frames
                     }
 
 type Lock = MVar ()
@@ -459,23 +460,27 @@ retrieveNFrames ∷ DeviceHandle
                 → Int               -- ^ number of frames
                 → IO [Frame]
 retrieveNFrames devh addr sizes interval timeout nframes = do
-    let nworkers = 6
+    let nworkers = 10
+        deltaT = interval `div` (fromIntegral nworkers)
 
     count ← newMVar 0
     chan  ← newChan
 
     let readStream = handleShutdown count $ do
-            xs ← readIsochronous devh addr sizes timeout
-            writeChan chan $ filter ((≥ 12) ∘ B.length) xs
+          xs ← readIsochronous devh addr sizes timeout
+          writeChan chan xs
 
-            done ← (≥ nframes) `fmap` readMVar count
-            if done
-               then return () -- end
-               else waitFrameInterval interval ≫ readStream -- loop
+          done ← (≥ nframes) `fmap` readMVar count
+          if done
+             then return () -- end
+             else waitFrameInterval interval ≫ readStream -- loop
 
     E.bracket
         -- launch (length ids) boundWorkers.
-        (replicateM nworkers (boundWorker $ readStream))
+        --(replicateM nworkers (boundWorker readStream))
+        (mapM (\i → waitFrameInterval (deltaT * i)
+                    ≫ boundWorker readStream) [1..nworkers])
+
 
         -- When interrupted/finished, assert the end
         -- and wait for every background threads.
@@ -561,11 +566,6 @@ isIsoEndpoint ep = case endpointAttribs ep of
 intervalToFPS ∷ FrameInterval → Float
 intervalToFPS x = 10000000 / fromIntegral x
 
-scrTime ∷ B.ByteString → Word32
-scrTime bs =
-    let StreamHeader _ _ (Just (t, _)) = extractStreamHeader bs
-    in t
-
 withInterfaceAltSetting ∷ DeviceHandle
                         → InterfaceNumber → InterfaceAltSetting
                         → IO α → IO α
@@ -587,39 +587,51 @@ withUnbufferStdout =
 -- frames. That is we skip empty payloads, remove frame headers and
 -- concatenate together the different payloads of a single image frame.
 -- Last but not the least, we assert that every frame as a correct size.
-extractFrames ∷ Int → Int → [B.ByteString] → [Frame]
-extractFrames w h bs =
+reorderFrames ∷ Int → Int → [B.ByteString] → [Frame]
+reorderFrames w h bs =
     map normalizeSize ∘ groupFrames ∘ removeEmptyPayload $ bs
 
   where
-    -- remove empty payloads.
-    removeEmptyPayload = filter ((> 12) ∘ B.length)
+    -- remove empty payloads (whose size is inferior to the stream
+    -- header minimum).
+    removeEmptyPayload = filter ((> 2) ∘ B.length)
 
     groupFrames xs =
-        let parity0 = frameParity ∘ head $ bs
-            (_, result, _) = foldl' groupFrame ([], [], parity0) xs
+        let (result, _, _) = foldl' groupFrame ([], [], []) xs
         in reverse result
 
-    -- scan every frame of same parity until we found the EOF flag.
-    groupFrame (frame,acc,parity) x
+    -- Maintain two frame buffer, one odds and one even.
+    -- Flush the appropriate buffer when receiving an EndOfFrame.
+    groupFrame (acc, evens, odds) x
 
-        -- add this payload to our current frame.
-        | parity ≡ frameParity x
-        ∧ (not $ isEndOfFrame x)     = let payload = removeStreamHeader x
-                                       in ((payload:frame),acc,parity)
+        -- Flush the buffer.
+        | endOfFrame
+        ∧ (parity ≡ Odd)   = let frame = makeFrame (payload:odds)
+                             in (frame:acc, evens, [])
 
-        -- add this payload to our current frame.
-        -- and flush our current frame to the acc result.
-        | parity ≡ frameParity x
-        ∧ isEndOfFrame x             = let payload = removeStreamHeader x
-                                           frame' = B.concat
-                                                  ∘ reverse
-                                                  $ (payload:frame)
-                                           parity' = toggleParity parity
-                                       in ([], frame':acc, parity')
+        | endOfFrame
+        ∧ (parity ≡ Even)  = let frame = makeFrame (payload:evens)
+                             in (frame:acc, [], odds)
+
+        -- add this payload to the appropriate frame.
+        | (parity ≡ Odd)   = (acc, evens, payload:odds)
+
+        | (parity ≡ Even)  = (acc, payload:evens, odds)
 
         -- Ignore anything else.
-        | otherwise                  = (frame, acc, parity)
+        | otherwise        = (acc, evens, odds)
+
+      where
+        payload       = removeStreamHeader x
+        StreamHeader (BitMask flags) _ _ = extractStreamHeader x
+        endOfFrame    = EndOfFrame ∈ flags
+        parity        = if FID Odd ∈ flags then Odd else Even
+        makeFrame     = B.concat ∘ reverse
+
+        -- XXX: we don't use PTS and SCR slots.
+        -- it works without them, so why bother ?
+        --scrTime f = let StreamHeader _ _ (Just (t,_)) = extractStreamHeader f in t
+        --ptsTime f = let StreamHeader _ (Just t) _ = extractStreamHeader f in t
 
     -- FIXME: Size should be with * height * (2 =?= bits-per-pixel)
     normalizeSize x =
@@ -627,7 +639,7 @@ extractFrames w h bs =
             frameSize  = w * h * 2
         in case compare actualSize frameSize of
              -- pad the image if our stream was truncated.
-             LT → B.concat [x, B.replicate (frameSize - actualSize) 0]
+             LT → B.append x (B.replicate (frameSize - actualSize) 0)
 
              -- the first frame is often too big.
              -- truncating to a correct size.
@@ -640,20 +652,10 @@ removeStreamHeader bs = B.drop l bs
   where
     l = fromIntegral $ B.head bs -- bLength is the first byte.
 
-frameParity ∷ B.ByteString → Parity
-frameParity bs =
-    let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
-        parity = if (FID Even) ∈ xs then Even else Odd
-    in parity
-
 isEndOfFrame ∷ B.ByteString → Bool
 isEndOfFrame bs =
     let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
     in EndOfFrame ∈ xs
-
-toggleParity ∷ Parity → Parity
-toggleParity Even = Odd
-toggleParity _    = Even
 
 {----------------------------------------------------------------------
 -- (Uncompressed) Payload Frame Header.
