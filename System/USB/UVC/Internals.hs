@@ -120,7 +120,7 @@ import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, readMVar
 import Data.Bits               ( Bits, testBit, (.|.), shiftL )
 import Data.Data               ( Data )
 import Data.Function           ( on )
-import Data.List               ( find, minimumBy, foldl' )
+import Data.List               ( find, minimumBy, foldl', sortBy )
 import Data.Maybe              ( catMaybes )
 import Data.Typeable           ( Typeable )
 import Data.Word               ( Word8, Word16, Word32 )
@@ -365,77 +365,73 @@ instance Show VideoPipe where
                     (length $ vpFrames x)
 
 -- | Read video frames.
--- Throw 'InvalidParamException' the MaxPayloadTransferSize requested by
--- the ProbeCommitControl could not be found.
+-- Throw 'InvalidParamException' if the dwMaxPayloadTransferSize requested
+-- by the ProbeCommitControl could not be found.
 readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
               → Timeout → IO VideoPipe
 readVideoData video devh ctrl nframes timeout = do
     let transferSize = pcMaxPayloadTransferSize ctrl
         interface    = head ∘ videoStreams $ video
+        endpoint     = vsiEndpointAddress
+                     ∘ head ∘ vsdInterfaces
+                     ∘ head ∘ videoStrDescs
+                     $ video
 
-    case findIsochronousAltSettings interface transferSize of
-         Nothing → E.throwIO InvalidParamException
-         Just x  → do
+        altsetting = findIsochronousAltSettings interface endpoint transferSize
 
-             -- Extractin _a lot_ of information from our video device
-             -- and our control parameters.
-             let altInterface = interface !! fromIntegral x
-                 interfaceN   = interfaceNumber altInterface
-                 frameSize    = pcMaxVideoFrameSize ctrl
-                 interval     = pcFrameInterval ctrl
+        -- Extractin _a lot_ of information from our video device
+        -- and our control parameters.
+        altInterface = interface !! fromIntegral altsetting
+        interfaceN   = interfaceNumber altInterface
+        frameSize    = pcMaxVideoFrameSize ctrl
+        interval     = pcFrameInterval ctrl
 
-                 -- Endpoint address.
-                 addr = endpointAddress
-                      ∘ head ∘ filter isIsoEndpoint
-                      ∘ interfaceEndpoints
-                      $ altInterface
+        -- Compute the number of isopackets and their size
+        -- based on the frame size.
+        -- N.B.: the number of packets is caped to 64. I don't
+        -- know why but the system could not process high-res
+        -- frame requiring npackets > 2000.
+        ratio ∷ Double
+        ratio = fromIntegral frameSize / fromIntegral transferSize
+        npackets ∷ Int
+        npackets = if ratio > 64 then 64 else 1 + ceiling ratio
+        sizes = replicate npackets transferSize
 
-                 -- Compute the number of isopackets and their size
-                 -- based on the frame size.
-                 -- N.B.: the number of packets is caped to 64. I don't
-                 -- know why but the system could not process high-res
-                 -- frame requiring npackets > 2000.
-                 ratio ∷ Double
-                 ratio = fromIntegral frameSize / fromIntegral transferSize
-                 npackets ∷ Int
-                 npackets = if ratio > 64 then 64 else 1 + ceiling ratio
-                 sizes = replicate npackets transferSize
+        -- ajusting the interval according to the actual number
+        -- of packets.
+        isopayload = npackets * transferSize
+        ratio' ∷ Double
+        ratio' = fromIntegral isopayload
+               * fromIntegral interval
+               / fromIntegral frameSize
+        interval' = round ratio' + 1
 
-                 -- ajusting the interval according to the actual number
-                 -- of packets.
-                 isopayload = npackets * transferSize
-                 ratio' ∷ Double
-                 ratio' = fromIntegral isopayload
-                        * fromIntegral interval
-                        / fromIntegral frameSize
-                 interval' = round ratio' + 1
+        -- Additionnal information.
+        fmtDsc = getFormatUncompressed video
+        format = fFormat fmtDsc
+        colors = fColors fmtDsc
+        (w,h)  = (fWidth &&& fHeight)
+               ∘ head
+               ∘ filter (\f → fFrameIndex f ≡ pcFrameIndex ctrl)
+               ∘ getFramesUncompressed
+               $ video
 
-                 -- Additionnal information.
-                 fmtDsc = getFormatUncompressed video
-                 format = fFormat fmtDsc
-                 colors = fColors fmtDsc
-                 (w,h)  = (fWidth &&& fHeight)
-                        ∘ head
-                        ∘ filter (\f → fFrameIndex f ≡ pcFrameIndex ctrl)
-                        ∘ getFramesUncompressed
-                        $ video
+    printIsoInformations transferSize frameSize npackets
+                         interval format w h
 
-             printIsoInformations transferSize frameSize npackets
-                                  interval format w h
+    frames ← withInterfaceAltSetting devh interfaceN altsetting $
+        retrieveNFrames devh endpoint sizes interval' timeout nframes
 
-             frames ← withInterfaceAltSetting devh interfaceN x $
-                 retrieveNFrames devh addr sizes interval' timeout nframes
+    -- we cheat here since our headers have a SCR field.
+    --let xs = sortBy (compare `on` scrTime) frames
 
-             -- we cheat here since our headers have a SCR field.
-             --let xs = sortBy (compare `on` scrTime) frames
-
-             return $ VideoPipe
-                    { vpFormat = format
-                    , vpColors = colors
-                    , vpWidth  = w
-                    , vpHeight = h
-                    , vpFrames = frames
-                    }
+    return $ VideoPipe
+           { vpFormat = format
+           , vpColors = colors
+           , vpWidth  = w
+           , vpHeight = h
+           , vpFrames = frames
+           }
 
 type Lock = MVar ()
 
@@ -534,18 +530,36 @@ printIsoInformations xferSize frameSize npackets ival fmt w h = do
     dimensions = printf "%dx%d" w h
 
 -- | Search a (stream) interface and select the correct alt-setting for
--- which the isochronous endpoint has a payload equal to xferSize.
-findIsochronousAltSettings ∷ Interface → Int → Maybe InterfaceAltSetting
-findIsochronousAltSettings iface xferSize =
-    find p iface ≫= return ∘ interfaceAltSetting -- … in the Maybe monad.
+-- which the isochronous endpoint has a payload equal or greater than
+-- xferSize.
+--
+-- Throw 'InvalidParamException' if the dwMaxPayloadTransferSize requested
+-- by the ProbeCommitControl could not be found.
+findIsochronousAltSettings ∷ Interface → EndpointAddress → Int
+                           → InterfaceAltSetting
+findIsochronousAltSettings iface epaddr xferSize =
+    case find (\(size,_) → xferSize ≤ size) sizesAltsettings of
+      Nothing   → E.throw InvalidParamException
+      Just (_,x)→ x
   where
-    -- ⋅ search the alt-iface endpoints for an isochronous one;
-    -- ⋅ check its size is the right one;
-    -- ⋅ otherwise, return False.
-    -- Hint: the 'maybe' code must be read in reverse O_o
-    p alt = maybe False
-                  (\ep → xferSize ≡ epSize ep)
-                  (find isIsoEndpoint (interfaceEndpoints alt))
+    -- An association list of (size, alt-setting) orderded by increasing
+    -- size.
+    sizesAltsettings ∷ [(Int, InterfaceAltSetting)]
+    sizesAltsettings = sortBy (compare `on` fst)
+                     ∘ map (getSize &&& interfaceAltSetting)
+                     ∘ getAlt
+                     $ iface
+
+    -- Compute the endpoint transfer size for every alt-settings.
+    getSize ∷ InterfaceDesc → Int
+    getSize = epSize ∘ head ∘ filter isOurEndpoint ∘ interfaceEndpoints
+
+    -- Select an alternate setting having the desired endpoint.
+    getAlt ∷ Interface → [InterfaceDesc]
+    getAlt = filter (any isOurEndpoint ∘ interfaceEndpoints)
+
+    -- Predicate on our endpoint address.
+    isOurEndpoint = \ep → endpointAddress ep ≡ epaddr
 
     -- MaxPacketSize of an isochronous endpoint ≡ packet_size ⋅ x
     -- where x is the number of packets, i.e opportunity + 1.
@@ -555,11 +569,6 @@ findIsochronousAltSettings iface xferSize =
 -- | Convert from units of 100 ns to 'threadDelay' microseconds.
 waitFrameInterval ∷ FrameInterval → IO ()
 waitFrameInterval t = threadDelay (fromIntegral t `div` 10)
-
-isIsoEndpoint ∷ EndpointDesc → Bool
-isIsoEndpoint ep = case endpointAttribs ep of
-                     Isochronous _ _ → True
-                     _               → False
 
 -- Interval is in units of 100ns
 -- ⇒ There is 1e7 units of 100ns in one second …
