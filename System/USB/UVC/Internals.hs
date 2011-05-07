@@ -9,6 +9,7 @@
 -- to Common-Lisp's gigamonkeys binary-data.
 
 module System.USB.UVC.Internals
+{-
     (
     -- * The VideoDevice and its interface association
       VideoDevice(..)
@@ -90,6 +91,8 @@ module System.USB.UVC.Internals
     , FrameInterval
     , GUID(..)
     ) where
+-}
+    where
 
 -- Qualified imports.
 import qualified Data.ByteString    as B
