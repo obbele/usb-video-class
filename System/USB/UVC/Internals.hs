@@ -2139,70 +2139,68 @@ parseVSInputHeader ∷ Int → Int → Int → Get.Get VSInterface
 parseVSInputHeader size total_size nformats = boundParser total_size $ do
 
   -- Parse header specific content.
-  (ep,info,link,scm,ts,tu,ctrls) ← boundParser size $ do
-        bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
-        bmInfo ← unmarshalVSCapability `fmap` Get.getWord8
-        bTerminalLink ← Get.getWord8
-        bStillCaptureMethod ← Get.getWord8
-        bTriggerSupport ← unmarshalTriggerSupport `fmap` Get.getWord8
-        bTriggerUsage ← unmarshalTriggerUsage `fmap` Get.getWord8
-        bControlSize ← fromIntegral `fmap` Get.getWord8
-        bmaControls ← replicateM nformats $ do
-                            bitmask ← unmarshalVSControl `fmap` Get.getWord8
-                            Get.skip (bControlSize - 1) -- skipping extra bits
-                            return bitmask
+  bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
+  bmInfo ← unmarshalVSCapability `fmap` Get.getWord8
+  bTerminalLink ← Get.getWord8
+  bStillCaptureMethod ← Get.getWord8
+  bTriggerSupport ← unmarshalTriggerSupport `fmap` Get.getWord8
+  bTriggerUsage ← unmarshalTriggerUsage `fmap` Get.getWord8
+  bControlSize ← fromIntegral `fmap` Get.getWord8
+  bmaControls ← replicateM nformats $ do
+                      bitmask ← unmarshalVSControl `fmap` Get.getWord8
+                      Get.skip (bControlSize - 1) -- skipping extra bits
+                      return bitmask
 
-        return ( bEndpointAddress, bmInfo, bTerminalLink
-               , bStillCaptureMethod, bTriggerSupport, bTriggerUsage
-               , bmaControls )
+  -- Skip any remaining bytes in the header descriptor.
+  Get.skip (size - 7 - nformats * bControlSize)
 
   -- Parse the different formats.
-  formats ← parseVSFormats ctrls []
+  formats ← mapM parseVSFormats bmaControls
 
   return $ InputInterface
-         { vsiEndpointAddress   = ep
-         , vsiTerminalLink      = link
-         , iiInfo               = info
-         , iiStillCaptureMethod = scm
-         , iiTriggerSupport     = ts
-         , iiTriggerUsage       = tu
+         { vsiEndpointAddress   = bEndpointAddress
+         , vsiTerminalLink      = bTerminalLink
+         , iiInfo               = bmInfo
+         , iiStillCaptureMethod = bStillCaptureMethod
+         , iiTriggerSupport     = bTriggerSupport
+         , iiTriggerUsage       = bTriggerUsage
          , vsiFormats           = formats
          }
-
 
 -- | Read VS Interface Output Header Descriptors as specified
 -- in USB Video Class 1.0a, table 3-14.
 parseVSOutputHeader ∷ Int → Int → Int → Get.Get VSInterface
 parseVSOutputHeader size total_size nformats = boundParser total_size $ do
-  (ep,link,ctrls) ← boundParser size $ do
-      bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
-      bTerminalLink ← Get.getWord8
+  bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
+  bTerminalLink ← Get.getWord8
 
-      bmaControls ← if (size ≤ 2) -- only in UVC v1.1
-         then return $ replicate nformats (BitMask [])
-         else do bControlSize ← fromIntegral `fmap` Get.getWord8
-                 replicateM nformats $ do
-                    bitmask ← unmarshalVSControl `fmap` Get.getWord8
-                    Get.skip (bControlSize - 1) -- skipping extra bits
-                    return bitmask
+  bmaControls ← if (size ≤ 2) -- only in UVC v1.1
+     then do -- skip remaining descriptor bytes.
+             Get.skip (size - 2)
+             return $ replicate nformats (BitMask [])
 
-
-      return ( bEndpointAddress, bTerminalLink, bmaControls )
+     else do bControlSize ← fromIntegral `fmap` Get.getWord8
+             xs ← replicateM nformats $ do
+                bitmask ← unmarshalVSControl `fmap` Get.getWord8
+                Get.skip (bControlSize - 1) -- skipping extra bits
+                return bitmask
+             -- skip remaining descriptor bytes.
+             Get.skip (size - 2 - nformats * bControlSize)
+             return xs
 
   -- Parse the different formats.
-  formats ← parseVSFormats ctrls []
+  formats ← mapM parseVSFormats bmaControls
 
   return $ OutputInterface
-         { vsiEndpointAddress = ep
-         , vsiTerminalLink    = link
+         { vsiEndpointAddress = bEndpointAddress
+         , vsiTerminalLink    = bTerminalLink
          , vsiFormats         = formats
          }
 
 -- | Begin to read a Video Streaming Descriptor and dispatch to the
 -- right specialised parser.
-parseVSFormats ∷ [BitMask VSControl] → [VSFormat] → Get.Get [VSFormat]
-parseVSFormats [] acc = return $ reverse acc
-parseVSFormats (ctrl:ctrls) acc = do
+parseVSFormats ∷ BitMask VSControl → Get.Get VSFormat
+parseVSFormats ctrl = do
     bLength ← fromIntegral `fmap` Get.getWord8
     bDescriptorType ← Get.getWord8
     bDescriptorSubType ← Get.getWord8
@@ -2215,16 +2213,14 @@ parseVSFormats (ctrl:ctrls) acc = do
 
     let fallback name = parseVSUnknownFormat name ctrl size
 
-    x ← case bDescriptorSubType of
+    case bDescriptorSubType of
           VS_FORMAT_UNCOMPRESSED → parseVSFormatUncompressed ctrl size
           VS_FORMAT_MJPEG        → fallback "FORMAT_MJPEG"
           VS_FORMAT_MPEG2TS      → fallback "FORMAT_MPEG2TS"
           VS_FORMAT_DV           → fallback "FORMAT_DV"
           VS_FORMAT_FRAME_BASED  → fallback "FORMAT_FRAME_BASED"
           VS_FORMAT_STREAM_BASED → fallback "FORMAT_STREAM_BASED"
-          _ → fallback $ "FORMAT(" ⧺ show bDescriptorSubType ⧺ ")"
-
-    parseVSFormats ctrls (x:acc) -- loop recursion
+          _ → fallback $ "FORMAT_(" ⧺ show bDescriptorSubType ⧺ ")"
 
 parseVSUnknownFormat ∷ String → BitMask VSControl → Int → Get.Get VSFormat
 parseVSUnknownFormat name ctrl size = do
