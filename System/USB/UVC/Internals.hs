@@ -1164,14 +1164,14 @@ ignoreNotFound io = E.catch io handle
 -- ⋅ scan every device available
 -- ⋅ for every device, scan their configurations
 -- ⋅ for every configuration, scan their interfaces
--- ⋅ for every interface alt-settings, check that interfaceClass ≡ Video
+-- ⋅ for every interface, check that interfaceClass ≡ Video
 getVideoInterfaces ∷ Device → [Interface]
 getVideoInterfaces dev =
     -- invoking []'s supernatural monad power.
     let ifaces = [deviceDesc dev]
               ≫= deviceConfigs
               ≫= configInterfaces
-        isVIf  = any (\alt → interfaceClass alt ≡ videoClass)
+        isVIf  = \(alt0:_) → interfaceClass alt0 ≡ videoClass
     in filter isVIf ifaces
   where
     videoClass = CC_VIDEO
@@ -1368,7 +1368,7 @@ getVideoDevice dev = do
                 -- control AND streaming interfaces. So for streaming
                 -- interfaces, the range is …
                 range    = [bFirstInterface + 1 .. bInterfaceCount - 1]
-                isStream = any (\alt → interfaceNumber alt ∈ range)
+                isStream = \(alt0:_) → interfaceNumber alt0 ∈ range
                 streams  = filter isStream ifaces
                 streamDs = map extractVideoStreamDesc streams
 
