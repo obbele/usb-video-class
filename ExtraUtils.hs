@@ -2,6 +2,9 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 
+-- | Provide miscellaneous utilities, including data abstraction
+-- ('BitMask') and handy functions.
+
 module ExtraUtils where
 
 import qualified Data.Text as T

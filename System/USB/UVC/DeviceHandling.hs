@@ -2,12 +2,12 @@
 {-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE CPP #-}
 
-module System.USB.UVC.DeviceHandling (
+-- | Opening and closing a video device.
 
-    -- * VideoDevice handling
-      withVideoDeviceHandle
-    , unsafeOpenVideoDevice
-    , unsafeCloseVideoDevice
+module System.USB.UVC.DeviceHandling
+    ( withVideoDeviceHandle
+    , openVideoDevice
+    , closeVideoDevice
 
     ) where
 
@@ -22,54 +22,88 @@ import System.USB.UVC.Descriptors
 import System.USB
 
 -- Base System.
+import Control.Monad              ( forM_, when )
 import Text.Printf                ( printf )
-import Prelude.Unicode            ( (∘) )
+import Prelude.Unicode            ( (∘), (≠) )
 
 {----------------------------------------------------------------------
 -- VideoDevice Handling.
 ----------------------------------------------------------------------}
 
-unsafeOpenVideoDevice ∷ VideoDevice → IO DeviceHandle
-unsafeOpenVideoDevice v = do
+setVideoConfig ∷ VideoDevice → IO ()
+setVideoConfig video = withDeviceHandle dev $ \devh → do
+    currentConfig ← getConfig devh
+    when (currentConfig ≠ config) $ setConfig devh config
+  where
+    dev    = videoDevice video
+    config = Just (videoConfig video)
+
+-- | Open a VideoDevice by:
+--
+-- 0. getting the DeviceHandle;
+--
+-- 1. switching to the right USB configuration;
+--
+-- 2. detaching the original kernel driver, if needed;
+--
+-- 3. claiming required (control + streaming) interfaces.
+openVideoDevice ∷ VideoDevice → IO DeviceHandle
+openVideoDevice v = do
     devh ← openDevice device
+
+    printf "Selecting the right configuration\n"
+    setVideoConfig v
 
     printf "Acquiring interface number %s\n" (show ctrl)
     ignoreNotFound $ detachKernelDriver devh ctrl
     claimInterface devh ctrl
 
-    printf "Acquiring interface number %s\n" (show stream0)
-    ignoreNotFound $ detachKernelDriver devh stream0
-    claimInterface devh stream0
+    forM_ streams $ \stream → do
+        printf "Acquiring interface number %s\n" (show stream)
+        ignoreNotFound $ detachKernelDriver devh stream
+        claimInterface devh stream
 
     return devh
 
   where
     device  = videoDevice v
     ctrl    = videoCtrlIface v
-    stream0 = head ∘ videoStrIfaces $ v
+    streams = videoStrIfaces v
 
-unsafeCloseVideoDevice ∷ VideoDevice → DeviceHandle → IO ()
-unsafeCloseVideoDevice v devh = do
+-- | Close a VideoDevice by:
+--
+-- 3. releasing the interfaces (control + streaming);
+--
+-- 2. re-attaching the original kernel driver, if possible;
+--
+-- 1. closing the USB DeviceHandle.
+closeVideoDevice ∷ VideoDevice → DeviceHandle → IO ()
+closeVideoDevice v devh = do
     releaseInterface devh ctrl0
     ignoreNotFound $ attachKernelDriver devh ctrl0
 
-    releaseInterface devh stream0
-    ignoreNotFound $ attachKernelDriver devh stream0
+    forM_ streams $ \stream → do
+        releaseInterface devh stream
+        ignoreNotFound $ attachKernelDriver devh stream
 
     closeDevice devh
 
   where
     ctrl0   = videoCtrlIface v
-    stream0 = head ∘ videoStrIfaces $ v
+    streams = videoStrIfaces v
 
+-- | A safe wrapper around 'openVideoDevice' and 'closeVideoDevice'.
+-- The IO computation is run after opening the video device and the
+-- device is guaranteed to be closed, even in case of an exception.
 withVideoDeviceHandle ∷ VideoDevice → (DeviceHandle → IO α) → IO α
-withVideoDeviceHandle v io =
+withVideoDeviceHandle v io = do
+    setVideoConfig v
     withDeviceHandle device $ \devh →
-    withDetachedKernelDriver devh ctrl0 $
-    withClaimedInterface devh ctrl0 $
-    withDetachedKernelDriver devh stream0 $
-    withClaimedInterface devh stream0 $
-    io devh
+        withDetachedKernelDriver devh ctrl0 $
+        withClaimedInterface devh ctrl0 $
+        withDetachedKernelDriver devh stream0 $
+        withClaimedInterface devh stream0 $
+        io devh
   where
     device  = videoDevice v
     ctrl0   = videoCtrlIface v

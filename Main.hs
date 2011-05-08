@@ -13,7 +13,7 @@ import Data.List                ( find )
 import Text.Printf              ( printf )
 import System.Environment       ( getArgs )
 
-import Control.Monad.Unicode    ( (≫=), (=≪) )
+import Control.Monad.Unicode    ( (≫=) )
 import Data.List.Unicode        ( (⧺) )
 import Prelude.Unicode          ( (∧), (≡), (∘) )
 
@@ -51,7 +51,7 @@ main = do
 -- @W@ is the width and @H@ the height.
 writeRawDataToDisk ∷ IO ()
 writeRawDataToDisk = do
-    VideoPipe _ _ w h frames ← testISO
+    Pipe _ _ w h frames ← testISO
     let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
     B.writeFile filename (B.concat frames)
@@ -59,7 +59,7 @@ writeRawDataToDisk = do
 -- | Print the 'StreamHeader' of every retrieved iso-packet.
 inspectData ∷ IO ()
 inspectData = do
-    VideoPipe _ _ _ _ xs ← testISO
+    Pipe _ _ _ _ xs ← testISO
     mapM_ inspectStreamHeader xs
 
 inspectStreamHeader ∷ Frame → IO String
@@ -93,12 +93,12 @@ initCtx = do
     setDebug ctx PrintInfo
     return ctx
 
-findVideoDevice ∷ IO Device
+findVideoDevice ∷ IO VideoDevice
 findVideoDevice = initCtx ≫= getDevices ≫= \devices →
     case find hasVideoInterface devices of
          Nothing → error "Video device not found !"
          Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
-                      return d
+                      return $ videoDescription d
 
   --where predicate := isMyVideoDevice isMy2ndVideoDevice hasVideoInterface
 
@@ -132,23 +132,23 @@ tests = do
 -- | Testing if we can parse the extra bits in the video configuration
 -- descriptor.
 testVIA ∷ IO VideoDevice
-testVIA = findVideoDevice ≫= getVideoDevice
+testVIA = findVideoDevice
 
 -- | Testing if we can parse the extra bits in the video control
 -- interface descriptor.
-testVC ∷ IO [ComponentDesc]
+testVC ∷ IO [ComponentDescriptor]
 testVC = do
-    video ← getVideoDevice =≪ findVideoDevice
-    let components = vcdComponentDescs ∘ videoCtrlDesc $ video
+    video ← findVideoDevice
+    let components = vcdComponentDescriptors ∘ videoCtrlDesc $ video
     mapM_ print components
     putStrLn "----\n----\n----"
     return components
 
 -- | Testing if we can parse the extra bits in the first video streaming
 -- interface descriptor.
-testVS ∷ IO [VSInterface]
+testVS ∷ IO [StreamingInterface]
 testVS = do
-    video ← getVideoDevice =≪ findVideoDevice
+    video ← findVideoDevice
     let ifaces = vsdInterfaces ∘ head ∘ videoStrDescs $ video
     forM_ ifaces $ \iface → do
         print iface
@@ -161,24 +161,24 @@ testVS = do
 
 -- | Testing if we can negotiate some control sets with the device.
 testProbe ∷ IO ProbeCommitControl
-testProbe = findVideoDevice ≫= getVideoDevice ≫= \video →
+testProbe = findVideoDevice ≫= \video →
     withVideoDeviceHandle video $ \devh →
         negotiatePCControl video devh (simplestProbeCommitControl video)
 
--- | Testing the 'readVideoData' function to get raw video frames.
-testISO ∷ IO VideoPipe
-testISO = findVideoDevice ≫= getVideoDevice ≫= \video →
+-- | Testing the 'readNFrames' function to get raw video frames.
+testISO ∷ IO Pipe
+testISO = findVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
     ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
-    VideoPipe a b w h frames ← readVideoData video devh ctrl nframes timeout
-    return $ VideoPipe a b w h (reorderFrames w h frames)
+    Pipe a b w h frames ← readNFrames video devh ctrl nframes timeout
+    return $ Pipe a b w h (reorderFrames w h frames)
   where
     nframes = 100
     timeout = noTimeout
 
 -- | Interactively ask for the frame index and the number of frames.
 testVideoStream ∷ IO ()
-testVideoStream = findVideoDevice ≫= getVideoDevice ≫= \video →
+testVideoStream = findVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
     print video
 
@@ -191,7 +191,7 @@ testVideoStream = findVideoDevice ≫= getVideoDevice ≫= \video →
     nframes ← read `fmap` getLine
 
     ctrl ← negotiatePCControl video devh (customProbeCommitControl video idx)
-    VideoPipe _ _ w h frames ← readVideoData video devh ctrl nframes timeout
+    Pipe _ _ w h frames ← readNFrames video devh ctrl nframes timeout
 
     let filename = printf "/tmp/uvc_%dx%d.yuy2" w h
     printf "writing raw video flux to [%s]\n" filename
@@ -200,7 +200,7 @@ testVideoStream = findVideoDevice ≫= getVideoDevice ≫= \video →
   where
     timeout = noTimeout
 
-    printFrame ∷ VSFrame → IO String
+    printFrame ∷ FrameDescriptor → IO String
     printFrame f = printf "UncompressedFrame [%d] @ %dx%d\n" idx w h
       where idx = fFrameIndex f
             w = fWidth f

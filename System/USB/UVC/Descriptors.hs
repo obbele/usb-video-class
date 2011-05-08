@@ -7,13 +7,12 @@
 
 module System.USB.UVC.Descriptors
     ( VideoDevice(..)
-    , getVideoDevice
+    , videoDescription
     , hasVideoInterface
 
     -- * Common types
     , Width
     , Height
-    , Frame
     , FormatIndex
     , FrameIndex
     , FrameInterval
@@ -21,15 +20,15 @@ module System.USB.UVC.Descriptors
 
     -- * VideoStreaming Interface Descriptors
     --, extractVideoStreamDesc
-    , VideoStreamingDesc(..)
-    , VSInterface(..)
-    , VSFormat(..)
-    , VSFrame(..)
+    , StreamingDescriptor(..)
+    , StreamingInterface(..)
+    , FormatDescriptor(..)
+    , FrameDescriptor(..)
     , ColorMatching(..)
     , StillImageFrame(..)
-    , VSCapability(..)
+    , StreamingCapability(..)
     , TriggerUsage(..)
-    , VSControl(..)
+    , StreamingControl(..)
     , CompressionFormat(..)
     , InterlaceFlag(..)
     , FrameIntervalType(..)
@@ -42,9 +41,9 @@ module System.USB.UVC.Descriptors
     , isFormatUncompressed
 
     -- * VideoControl Interface Descriptor
-    --, extractVideoControlDesc
-    , VideoControlDesc(..)
-    , ComponentDesc(..)
+    --, extractControlDescriptor
+    , ControlDescriptor(..)
+    , ComponentDescriptor(..)
     , ComponentID
     , ProcessingControl(..)
     , VideoStandard(..)
@@ -78,6 +77,7 @@ import Data.Maybe            ( catMaybes )
 import Data.Typeable         ( Typeable )
 import Data.Word             ( Word8, Word16, Word32 )
 import Text.Printf           ( printf )
+import System.IO.Unsafe      ( unsafePerformIO )
 
 import Control.Monad.Unicode ( (≫=), (≫) )
 import Data.List.Unicode     ( (⧺) )
@@ -89,7 +89,6 @@ import Prelude.Unicode       ( (∧), (∨), (≡), (≠), (≤), (∘), (∈) )
 
 type Width  = Int
 type Height = Int
-type Frame  = B.ByteString
 
 -- | Global Unique Identifier.
 -- Used to identify video formats and vendor specific extension units.
@@ -152,31 +151,36 @@ guid_NV12 = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
 -- The VideoDevice Object and its interface association.
 ----------------------------------------------------------------------}
 
+-- | An abstract data type holding useful information about an UVC
+-- device, including reference to the original Device, the
+-- configuration number used, and for every control or streaming
+-- interface its number, standard descriptor and UVC descriptor.
 data VideoDevice = VideoDevice
     { videoDevice    ∷ Device
+    , videoConfig    ∷ ConfigValue
     , videoCtrlIface ∷ InterfaceNumber
-    , videoStrIfaces ∷ [InterfaceNumber]
     , videoControl   ∷ Interface
+    , videoCtrlDesc  ∷ ControlDescriptor
     , videoStreams   ∷ [Interface]
-    , videoCtrlDesc  ∷ VideoControlDesc
-    , videoStrDescs  ∷ [VideoStreamingDesc]
+    , videoStrIfaces ∷ [InterfaceNumber]
+    , videoStrDescs  ∷ [StreamingDescriptor]
     , videoName      ∷ Maybe String
     }
     deriving (Eq, Typeable)
 
-isProcessingUnit ∷ ComponentDesc → Bool
-isProcessingUnit (ProcessingUnitDesc _ _ _ _ _ _) = True
+isProcessingUnit ∷ ComponentDescriptor → Bool
+isProcessingUnit (ProcessingUnit _ _ _ _ _ _) = True
 isProcessingUnit _                                = False
 
-isCameraTerminal ∷ ComponentDesc → Bool
-isCameraTerminal (CameraTerminalDesc _ _ _ _ _ _ _ _) = True
+isCameraTerminal ∷ ComponentDescriptor → Bool
+isCameraTerminal (CameraTerminal _ _ _ _ _ _ _ _) = True
 isCameraTerminal _                                    = False
 
-isExtensionUnit ∷ ComponentDesc → Bool
-isExtensionUnit (ExtensionUnitDesc _ _ _ _ _) = True
+isExtensionUnit ∷ ComponentDescriptor → Bool
+isExtensionUnit (ExtensionUnit _ _ _ _ _) = True
 isExtensionUnit _                             = False
 
--- | Using a pretty-printer when display a video device.
+-- | Using a pretty-printer to display the video device.
 instance Show VideoDevice where
     show video = printf "VideoDevice \"%s\" on {%s} \n\\
                         \%s\\
@@ -201,10 +205,10 @@ instance Show VideoDevice where
                                (pxunits c)
 
         -- Pretty printing the processing units.
-        punits   ∷ VideoControlDesc → String
+        punits   ∷ ControlDescriptor → String
         punits   = concatMap ppunit
                  ∘ filter isProcessingUnit
-                 ∘ vcdComponentDescs
+                 ∘ vcdComponentDescriptors
         ppunit   = \p → printf " ----- ProcessingUnit[%d]\n\\
                                \%s"
                                (puId p)
@@ -212,10 +216,10 @@ instance Show VideoDevice where
         puctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing the camera terminal.
-        pcameras ∷ VideoControlDesc → String
+        pcameras ∷ ControlDescriptor → String
         pcameras = concatMap pcamera
                  ∘ filter isCameraTerminal
-                 ∘ vcdComponentDescs
+                 ∘ vcdComponentDescriptors
         pcamera  = \c → printf " ----- CameraTerminal[%d]\n\\
                                \%s"
                                (ctId c)
@@ -223,10 +227,10 @@ instance Show VideoDevice where
         pcctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing extension units.
-        pxunits  ∷ VideoControlDesc → String
+        pxunits  ∷ ControlDescriptor → String
         pxunits  = concatMap pxunit
                  ∘ filter isExtensionUnit
-                 ∘ vcdComponentDescs
+                 ∘ vcdComponentDescriptors
         pxunit   = \u → printf " ----- ExtensionUnit[%d] %s\n"
                                (xuId u)
                                (show $ xuGuid u)
@@ -240,7 +244,7 @@ instance Show VideoDevice where
                                (formats s)
 
         -- Pretty printing uncompressed formats.
-        formats  ∷ VideoStreamingDesc → String
+        formats  ∷ StreamingDescriptor → String
         formats  = concatMap pformat
                  ∘ filter isFormatUncompressed ∘ vsiFormats
                  ∘ head ∘ vsdInterfaces
@@ -260,7 +264,7 @@ instance Show VideoDevice where
                                (colors $ fColors f)
 
         -- Pretty printing uncompressed frames.
-        pframe   ∷ VSFrame → String
+        pframe   ∷ FrameDescriptor → String
         pframe   = \f → printf " -------- FrameUncompressed[%d] @ %dx%d\n"
                                (fFrameIndex f)
                                (fWidth f)
@@ -297,8 +301,8 @@ instance Show VideoDevice where
 -- | Search the Device configurations for an existing video interface
 -- asssociation. If one is found, return its control and streaming
 -- interfaces in a new VideoDevice.
-getVideoDevice ∷ Device → IO VideoDevice
-getVideoDevice dev = do
+videoDescription ∷ Device → VideoDevice
+videoDescription dev = unsafePerformIO $ do
     -- First, search for a configuration containing a video interface
     -- association as described in USB Video Class 1.1, table 3-1.
     -- or USB Video Class 1.0a specs, section 3.7.
@@ -308,17 +312,9 @@ getVideoDevice dev = do
         Nothing     → error "This is not an UVC video device !"
 
         Just config → do
-            -- TODO:
-            -- should I move this thing in a 'withVideoDevice' function ?
-            --
-            -- Assure the right configuration is set.
-            let videoConfigValue = Just ∘ configValue $ config
-            currentConfig ← withDeviceHandle dev getConfig
-            when (currentConfig ≠ videoConfigValue) $
-                withDeviceHandle dev (flip setConfig videoConfigValue)
-
             -- Retrieve information.
-            let extra             = configExtra config
+            let videoConfigValue  = configValue config
+                extra             = configExtra config
                 bFirstInterface   = B.index extra 2
                 bInterfaceCount   = B.index extra 3
                 iFunction         = unmarshalStrIx $ B.index extra 7
@@ -331,7 +327,7 @@ getVideoDevice dev = do
 
                 -- bFirstInterface is the control interface.
                 vcontrol = ifaces !! fromIntegral bFirstInterface
-                controlD = extractVideoControlDesc vcontrol
+                controlD = extractControlDescriptor vcontrol
 
                 -- bInterfaceCount counts the number of (contiguous)
                 -- control AND streaming interfaces. So for streaming
@@ -351,6 +347,7 @@ getVideoDevice dev = do
 
             return $ VideoDevice
                    { videoDevice    = dev
+                   , videoConfig    = videoConfigValue
                    , videoCtrlIface = bFirstInterface
                    , videoStrIfaces = range
                    , videoControl   = vcontrol
@@ -378,7 +375,7 @@ getVideoDevice dev = do
 
 -- | Get the one (and unique?) uncompressed format video streaming
 -- descriptor.
-getFormatUncompressed ∷ VideoDevice → VSFormat
+getFormatUncompressed ∷ VideoDevice → FormatDescriptor
 getFormatUncompressed video =
     let formats = vsiFormats
                 ∘ head ∘ vsdInterfaces
@@ -389,7 +386,7 @@ getFormatUncompressed video =
          Just x  → x
 
 -- | Get every uncompressed frames video streaming descriptors.
-getFramesUncompressed ∷ VideoDevice → [VSFrame]
+getFramesUncompressed ∷ VideoDevice → [FrameDescriptor]
 getFramesUncompressed = fFrames ∘ getFormatUncompressed
 
 {----------------------------------------------------------------------
@@ -442,41 +439,39 @@ boundParser size parser = do
 -- VideoControl Interface Descriptors.
 ----------------------------------------------------------------------}
 
--- See USB Video Class 1.0a specifications, section 3.7.
-
-{-
--- XXX: data structure not used.
--- VideoControl:
--- ⋅ control endpoint @ 0x00
--- ⋅ status endpoint optional
--- ⋅ alternate settings ≡ [ 0x00 ]
-data VideoControl = VideoControl
-   { vcControlEndpoint ∷ EndpointDesc
-   , vcStatusEndpoint  ∷ (Maybe EndpointDesc)
-   , vcDescriptor      ∷ VideoControlDesc
-   } deriving (Eq, Show, Data, Typeable)
--}
-
-data VideoControlDesc = VideoControlDesc
+-- | To control the functional behavior of a particular video function,
+-- the Host can manipulate the Units and Terminals inside the video
+-- function. To make these objects accessible, the video function must
+-- expose a single VideoControl interface.
+--
+-- See sections 2.4.2 and 3.7 of the UVC specifications.
+data ControlDescriptor = ControlDescriptor
     { vcdUVC             ∷ ReleaseNumber
     , vcdClockFrequency  ∷ Int -- ^ in Hertz (deprecated in the specs).
     , vcdStreamIfaces    ∷ [InterfaceNumber]
-    , vcdComponentDescs  ∷ [ComponentDesc]
+    , vcdComponentDescriptors  ∷ [ComponentDescriptor]
     , vcdInterfaceNumber ∷ InterfaceNumber
    } deriving (Eq, Show, Data, Typeable)
 
--- | Compononent <- Terminal | Unit
+-- | The identifier number of either a unit or a component.
 type ComponentID = Word8
 
-data ComponentDesc
+data ComponentDescriptor
    = UnknownDesc !Int !Word8
-   | SelectorUnitDesc
+   -- | The Selector Unit (SU) selects from n input data streams and
+   -- routes them unaltered to the single output stream. It represents a
+   -- source selector, capable of selecting among a number of sources.
+   -- It has an Input Pin for each source stream and a single Output
+   -- Pin.
+   | SelectorUnit
        { suId                      ∷ !ComponentID
        , suNrInPins                ∷ !Int
        , suSourceID                ∷ ![ComponentID]
        , suSelector                ∷ !(Maybe StrIx)
        }
-   | ProcessingUnitDesc
+   -- | The Processing Unit (PU) controls image attributes of the video
+   -- being streamed through it. It has a single input and output pin.
+   | ProcessingUnit
        { puId                      ∷ !ComponentID
        , puSourceID                ∷ !ComponentID
        , puMaxMultiplier           ∷ !Int
@@ -484,14 +479,24 @@ data ComponentDesc
        , puVideoStandards          ∷ !(BitMask VideoStandard)
        , puProcessing              ∷ !(Maybe StrIx)
        }
-   | ExtensionUnitDesc
+   -- | The Extension Unit (XU) is the method provided by this
+   -- specification to add vendor-specific building blocks to the
+   -- specification. The Extension Unit can have one or more Input Pins
+   -- and has a single Output Pin.
+   | ExtensionUnit
        { xuId                      ∷ !ComponentID
        , xuGuid                    ∷ !GUID
        , xuNrInPins                ∷ !Int
        , xuSourceID                ∷ ![ComponentID]
        , xuExtension               ∷ !(Maybe StrIx)
        }
-   | CameraTerminalDesc
+   -- | The Camera Terminal (CT) controls mechanical (or equivalent
+   -- digital) features of the device component that transmits the video
+   -- stream. As such, it is only applicable to video capture devices
+   -- with controllable lens or sensor characteristics. A Camera
+   -- Terminal is always represented as an Input Terminal with a single
+   -- output pin.
+   | CameraTerminal
        { ctId                      ∷ !ComponentID
        , ctType                    ∷ !TerminalType
        , ctAssociatedTerminal      ∷ !ComponentID
@@ -501,14 +506,29 @@ data ComponentDesc
        , ctOcularFocalLength       ∷ !Int
        , ctControls                ∷ !(BitMask CameraControl)
        }
-   | InputTerminalDesc
+   -- | The Input Terminal (IT) is used as an interface between the
+   -- video function\’s \"outside world\" and other Units inside the
+   -- video function. It serves as a receptacle for data flowing into
+   -- the video function. Its function is to represent a source of
+   -- incoming data after this data has been extracted from the data
+   -- source. The data may include audio and metadata associated with a
+   -- video stream. These physical streams are grouped into a cluster
+   -- of logical streams, leaving the Input Terminal through a single
+   -- Output Pin.
+   | InputTerminal
        { itId                      ∷ !ComponentID
        , itType                    ∷ !TerminalType
        , itAssociatedTerminal      ∷ !ComponentID
        , itTerminal                ∷ !(Maybe StrIx)
        , itExtra                   ∷ !B.ByteString
        }
-   | OutputTerminalDesc
+   -- | The Output Terminal (OT) is used as an interface between Units
+   -- inside the video function and the \"outside world\". It serves as
+   -- an outlet for video information, flowing out of the video
+   -- function. Its function is to represent a sink of outgoing data.
+   -- The video data stream enters the Output Terminal through a single
+   -- Input Pin.
+   | OutputTerminal
        { otId                      ∷ !ComponentID
        , otType                    ∷ !TerminalType
        , otAssociatedTerminal      ∷ !ComponentID
@@ -665,8 +685,8 @@ unmarshalVideoStandards = unmarshalBitmask video_standards_bitmask
 --
 -- See Section 3.7 /VideoControl Interface Descriptors/ of the UVC
 -- specs.
-extractVideoControlDesc ∷ Interface → VideoControlDesc
-extractVideoControlDesc iface =
+extractControlDescriptor ∷ Interface → ControlDescriptor
+extractControlDescriptor iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
         extra = interfaceExtra alternate
         number = interfaceNumber alternate
@@ -674,7 +694,7 @@ extractVideoControlDesc iface =
     in controlDesc
 
 
-parseVCHeader ∷ InterfaceNumber → Get.Get VideoControlDesc
+parseVCHeader ∷ InterfaceNumber → Get.Get ControlDescriptor
 parseVCHeader ifaceNumber = do
     Get.skip 1 -- skip bLength
     bDescriptorType    ← Get.getWord8
@@ -690,15 +710,15 @@ parseVCHeader ifaceNumber = do
     if bDescriptorType    ≠ CS_INTERFACE
      ∨ bDescriptorSubType ≠ VC_HEADER
      then error "This is not a VideoControl interface descriptor"
-     else return $ VideoControlDesc
+     else return $ ControlDescriptor
                 { vcdUVC             = bcdUVC
                 , vcdClockFrequency  = dwClockFrequency
                 , vcdStreamIfaces    = baInterfaceNrs
-                , vcdComponentDescs  = components
+                , vcdComponentDescriptors  = components
                 , vcdInterfaceNumber = ifaceNumber
                 }
 
-parseVCComponents ∷ [ComponentDesc] → Get.Get [ComponentDesc]
+parseVCComponents ∷ [ComponentDescriptor] → Get.Get [ComponentDescriptor]
 parseVCComponents acc = do
     atEnd ← Get.isEmpty
     if atEnd
@@ -714,23 +734,23 @@ parseVCComponents acc = do
               let size = bLength - 1 - 1 - 1
 
               x ← case bDescriptorSubType of
-                    VC_INPUT_TERMINAL  → parseInputTerminalDesc  size
-                    VC_OUTPUT_TERMINAL → parseOutputTerminalDesc size
-                    VC_SELECTOR_UNIT   → parseSelectorUnitDesc   size
-                    VC_PROCESSING_UNIT → parseProcessingUnitDesc size
-                    VC_EXTENSION_UNIT  → parseExtensionUnitDesc  size
+                    VC_INPUT_TERMINAL  → parseInputTerminal  size
+                    VC_OUTPUT_TERMINAL → parseOutputTerminal size
+                    VC_SELECTOR_UNIT   → parseSelectorUnit   size
+                    VC_PROCESSING_UNIT → parseProcessingUnit size
+                    VC_EXTENSION_UNIT  → parseExtensionUnit  size
                     _ → parseDummyDesc size bDescriptorSubType
 
               parseVCComponents (x:acc) -- loop
 
 -- | Default fallback parser.
-parseDummyDesc ∷ Int → Word8 → Get.Get ComponentDesc
+parseDummyDesc ∷ Int → Word8 → Get.Get ComponentDescriptor
 parseDummyDesc bLength bDescriptorSubType =
   boundParser (bLength - 1 - 1 - 1) $ do
     return $ UnknownDesc bLength bDescriptorSubType
 
-parseInputTerminalDesc  ∷ Int → Get.Get ComponentDesc
-parseInputTerminalDesc size =
+parseInputTerminal  ∷ Int → Get.Get ComponentDescriptor
+parseInputTerminal size =
   boundParser size $ do
     bTerminalID    ← Get.getWord8
     wTerminalType  ← unmarshalTerminalType `fmap` Get.getWord16le
@@ -747,7 +767,7 @@ parseInputTerminalDesc size =
             bmControls ← unmarshalCameraControl `fmap` Get.getWord16le
             Get.skip (bControlSize - 2)
 
-            return $ CameraTerminalDesc
+            return $ CameraTerminal
                    { ctId                      = bTerminalID
                    , ctType                    = wTerminalType
                    , ctAssociatedTerminal      = bAssocTerminal
@@ -761,7 +781,7 @@ parseInputTerminalDesc size =
         -- if Not ITT_CAMERA, then …
         _ → do
             extra ← Get.getByteString (size - 5)
-            return $ InputTerminalDesc
+            return $ InputTerminal
                    { itId                 = bTerminalID
                    , itType               = wTerminalType
                    , itAssociatedTerminal = bAssocTerminal
@@ -769,8 +789,8 @@ parseInputTerminalDesc size =
                    , itExtra              = extra
                    }
 
-parseOutputTerminalDesc ∷ Int → Get.Get ComponentDesc
-parseOutputTerminalDesc size =
+parseOutputTerminal ∷ Int → Get.Get ComponentDescriptor
+parseOutputTerminal size =
   boundParser size $ do
     bTerminalID    ← Get.getWord8
     wTerminalType  ← unmarshalTerminalType `fmap` Get.getWord16le
@@ -779,7 +799,7 @@ parseOutputTerminalDesc size =
     iTerminal      ← unmarshalStrIx `fmap` Get.getWord8
     extra          ← Get.getByteString (size - 6)
 
-    return $ OutputTerminalDesc
+    return $ OutputTerminal
            { otId                 = bTerminalID
            , otType               = wTerminalType
            , otAssociatedTerminal = bAssocTerminal
@@ -788,23 +808,23 @@ parseOutputTerminalDesc size =
            , otExtra              = extra
            }
 
-parseSelectorUnitDesc ∷ Int → Get.Get ComponentDesc
-parseSelectorUnitDesc size =
+parseSelectorUnit ∷ Int → Get.Get ComponentDescriptor
+parseSelectorUnit size =
   boundParser size $ do
     bUnitID     ← Get.getWord8
     bNrInPins   ← fromIntegral `fmap` Get.getWord8
     baSourceIDs ← replicateM bNrInPins Get.getWord8
     iSelector   ← unmarshalStrIx `fmap` Get.getWord8
 
-    return $ SelectorUnitDesc
+    return $ SelectorUnit
            { suId       = bUnitID
            , suNrInPins = bNrInPins
            , suSourceID = baSourceIDs
            , suSelector = iSelector
            }
 
-parseProcessingUnitDesc ∷ Int → Get.Get ComponentDesc
-parseProcessingUnitDesc size =
+parseProcessingUnit ∷ Int → Get.Get ComponentDescriptor
+parseProcessingUnit size =
   boundParser size $ do
     bUnitID        ← Get.getWord8
     baSourceID     ← Get.getWord8
@@ -822,7 +842,7 @@ parseProcessingUnitDesc size =
                               -- this field. Ignoring it.
                             else return (BitMask [])
 
-    return $ ProcessingUnitDesc
+    return $ ProcessingUnit
            { puId             = bUnitID
            , puSourceID       = baSourceID
            , puMaxMultiplier  = wMaxMultiplier
@@ -831,8 +851,8 @@ parseProcessingUnitDesc size =
            , puProcessing     = iProcessing
            }
 
-parseExtensionUnitDesc ∷ Int → Get.Get ComponentDesc
-parseExtensionUnitDesc size =
+parseExtensionUnit ∷ Int → Get.Get ComponentDescriptor
+parseExtensionUnit size =
   boundParser size $ do
     bUnitID      ← Get.getWord8
     guidExtensionCode ← GUID `fmap` Get.getBytes 16
@@ -843,7 +863,7 @@ parseExtensionUnitDesc size =
     Get.skip bControlSize -- skipping extension unit bmControls.
     iExtension   ← unmarshalStrIx `fmap` Get.getWord8
 
-    return $ ExtensionUnitDesc
+    return $ ExtensionUnit
            { xuId        = bUnitID
            , xuGuid      = guidExtensionCode
            , xuNrInPins  = bNrInPins
@@ -862,41 +882,58 @@ parseExtensionUnitDesc size =
 -- VideoStreaming Interface Descriptors.
 ----------------------------------------------------------------------}
 
--- See USB Video Class 1.0a specifications, section 3.9.
-
-data VideoStreamingDesc = VideoStreamingDesc
+-- | VideoStreaming interfaces are used to interchange digital data
+-- streams between the Host and the video function. They are optional. A
+-- video function can have zero or more VideoStreaming interfaces
+-- associated with it, each possibly carrying data of a different nature
+-- and format. Each VideoStreaming interface can have one isochronous or
+-- bulk data endpoint for video, and an optional dedicated bulk endpoint
+-- for still images related to the video (only for method 3 of still
+-- image transfer. See section 2.4.2.4 "Still Image Capture"). This
+-- construction guarantees a one-to- one relationship between the
+-- VideoStreaming interface and the single data stream related to the
+-- endpoint.
+--
+-- See sections 2.4.3 and 3.9 of the UVC specifications.
+data StreamingDescriptor = StreamingDescriptor
     { vsdInterfaceNumber ∷ InterfaceNumber
-    , vsdInterfaces      ∷ [VSInterface]
+    , vsdInterfaces      ∷ [StreamingInterface]
     } deriving (Eq, Show, Data, Typeable)
 
-data VSInterface
+data StreamingInterface
+   -- | The Input Header descriptor is used for VS interfaces that
+   -- contain an IN endpoint for streaming video data.
    = InputInterface
            { vsiEndpointAddress        ∷ !EndpointAddress
-           , vsiTerminalLink           ∷ !Word8
-           , iiInfo                    ∷ !(BitMask VSCapability)
+           , vsiTerminalLink           ∷ !ComponentID
+           , iiInfo                    ∷ !(BitMask StreamingCapability)
            , iiStillCaptureMethod      ∷ !StillCaptureMethod
            , iiTriggerSupport          ∷ !Bool
            , iiTriggerUsage            ∷ !TriggerUsage
-           , vsiFormats                ∷ [VSFormat]
+           , vsiFormats                ∷ [FormatDescriptor]
            }
+   -- | The Output Header descriptor is used for VS interfaces that
+   -- contain an OUT endpoint for streaming video data.
    | OutputInterface
            { vsiEndpointAddress        ∷ !EndpointAddress
-           , vsiTerminalLink           ∷ !Word8
-           , vsiFormats                ∷ [VSFormat]
+           , vsiTerminalLink           ∷ !ComponentID
+           , vsiFormats                ∷ [FormatDescriptor]
            }
     deriving (Eq, Show, Data, Typeable)
 
-data VSFormat
+-- | A (Payload) Format descriptor defines the characteristics of a
+-- video stream with its specific format.
+data FormatDescriptor
    = UnknownFormatDescriptor
-           { fControls                 ∷ !(BitMask VSControl)
+           { fControls                 ∷ !(BitMask StreamingControl)
            , fFormatIndex              ∷ !FormatIndex
            , fName                     ∷ !String
-           , fFrames                   ∷ [VSFrame]
+           , fFrames                   ∷ [FrameDescriptor]
            , fStillImageFrame          ∷ Maybe StillImageFrame
            , fColors                   ∷ Maybe ColorMatching
            }
    | FormatUncompressed
-           { fControls                 ∷ !(BitMask VSControl)
+           { fControls                 ∷ !(BitMask StreamingControl)
            , fFormatIndex              ∷ !FormatIndex
            , fFormat                   ∷ !CompressionFormat
            , fBitsPerPixel             ∷ !Int
@@ -905,13 +942,16 @@ data VSFormat
            , fAspectRatioY             ∷ !Int
            , fInterlaceFlags           ∷ !(BitMask InterlaceFlag)
            , fCopyProtect              ∷ !Bool
-           , fFrames                   ∷ [VSFrame]
+           , fFrames                   ∷ [FrameDescriptor]
            , fStillImageFrame          ∷ Maybe StillImageFrame
            , fColors                   ∷ Maybe ColorMatching
            }
     deriving (Eq, Show, Data, Typeable)
 
-data VSFrame
+-- | A Video Frame descriptor (or Frame descriptor for short) is used to
+-- describe the decoded video and still image frame dimensions and other
+-- frame-specific characteristics supported by Frame- based formats.
+data FrameDescriptor
    = UnknownFrameDescriptor String
    | FrameUncompressed
            { fFrameIndex               ∷ !FrameIndex
@@ -926,10 +966,18 @@ data VSFrame
            }
    deriving (Eq, Show, Data, Typeable)
 
-isFormatUncompressed ∷ VSFormat → Bool
+isFormatUncompressed ∷ FormatDescriptor → Bool
 isFormatUncompressed (FormatUncompressed _ _ _ _ _ _ _ _ _ _ _ _) = True
 isFormatUncompressed _                                            = False
 
+-- | The Still Image Frame descriptor is only applicable for a VS
+-- interface that supports method 2 or 3 of still image capture in
+-- conjunction with frame-based Payload formats (e.g., MJPEG,
+-- uncompressed, etc.). A single still Image Frame descriptor is present
+-- by Format descriptor group. If the Input Header descriptor’s
+-- bStillCaptureMethod field is set to method 2 or 3, this Still Image
+-- Frame descriptor shall be defined (see section 3.9.2.1, \"Input Header
+-- Descriptor\").
 data StillImageFrame
    = StillImageFrame
            { siEndpointAddress         ∷ !EndpointAddress
@@ -938,6 +986,15 @@ data StillImageFrame
            }
    deriving (Eq, Show, Data, Typeable)
 
+-- | The Color Matching descriptor is an optional descriptor used to
+-- describe the color profile of the video data in an unambiguous way.
+-- Only one instance is allowed for a given format and if present, the
+-- Color Matching descriptor shall be placed following the Video and
+-- Still Image Frame descriptors for that format.
+--
+-- The viewing conditions and monitor setup are implicitly based on sRGB
+-- and the device should compensate for them (D50 ambient white, dim
+-- viewing or 64 lux ambient illuminance, 2.2 γ reference CRT, etc).
 data ColorMatching
    = ColorMatching
            { cmColorPrimaries           ∷ !ColorPrimaries
@@ -950,28 +1007,34 @@ data ColorMatching
 -- Class specification v1.0a, section 2.4.2.4 /Still Image Capture/.
 type StillCaptureMethod = Word8
 
--- | In units of 100ns.
+-- | The frame interval is the average display time of a single decoded
+-- video frame in 100ns units.
 type FrameInterval = Word32
 type FormatIndex = Word8
 type FrameIndex = Word8
 
-data VSCapability
+data StreamingCapability
    = DynamicFormatChangeSupported
    deriving (Eq, Show, Data, Typeable)
 
-vs_capability_bitmask ∷ BitMaskTable VSCapability
+vs_capability_bitmask ∷ BitMaskTable StreamingCapability
 vs_capability_bitmask =
    [ (0,  DynamicFormatChangeSupported)
    ]
 
-unmarshalVSCapability ∷ Bits α ⇒ α → BitMask VSCapability
-unmarshalVSCapability = unmarshalBitmask vs_capability_bitmask
+unmarshalStreamingCapability ∷ Bits α ⇒ α → BitMask StreamingCapability
+unmarshalStreamingCapability = unmarshalBitmask vs_capability_bitmask
 
 unmarshalTriggerSupport ∷ Word8 → Bool
 unmarshalTriggerSupport = (0x01 ≡)
 
+-- | Specifies how the host software shall respond to a hardware trigger
+-- interrupt event from this interface.
 data TriggerUsage
+   -- | Initiate still image capture.
    = InitiateStillImageCapture
+   -- | Host driver will notify client application of button press and
+   -- button release events.
    | GeneralPurposeButton
    deriving (Eq, Show, Data, Typeable)
 
@@ -979,7 +1042,7 @@ unmarshalTriggerUsage ∷ Word8 → TriggerUsage
 unmarshalTriggerUsage 0x01 = GeneralPurposeButton
 unmarshalTriggerUsage _    = InitiateStillImageCapture
 
-data VSControl
+data StreamingControl
    = Keyframerate
    | PFramerate
    | CompressionQuality
@@ -988,7 +1051,7 @@ data VSControl
    | UpdateFrameSegment
    deriving (Eq, Show, Data, Typeable)
 
-vs_control_bitmask ∷ BitMaskTable VSControl
+vs_control_bitmask ∷ BitMaskTable StreamingControl
 vs_control_bitmask =
     [ (0, Keyframerate)
     , (1, PFramerate)
@@ -998,8 +1061,8 @@ vs_control_bitmask =
     , (5, UpdateFrameSegment)
     ]
 
-unmarshalVSControl ∷ Bits α ⇒ α → BitMask VSControl
-unmarshalVSControl = unmarshalBitmask vs_control_bitmask
+unmarshalStreamingControl ∷ Bits α ⇒ α → BitMask StreamingControl
+unmarshalStreamingControl = unmarshalBitmask vs_control_bitmask
 
 data CompressionFormat
    = UnknownCompressionFormat GUID
@@ -1059,6 +1122,8 @@ unmarshalInterlaceFlags value = BitMask $ catMaybes [ testInterlaced
 unmarshalUncompressedCapabilities ∷ Word8 → Bool
 unmarshalUncompressedCapabilities = (`testBit` 0)
 
+-- | The frame interval is the average display time of a single decoded
+-- video frame in 100ns units.
 data FrameIntervalType
    = FrameIntervalContinous
         { fitMin  ∷ !FrameInterval
@@ -1068,6 +1133,7 @@ data FrameIntervalType
    | FrameIntervalDiscrete ![FrameInterval]
    deriving (Eq, Show, Data, Typeable)
 
+-- | This defines the color primaries and the reference white.
 data ColorPrimaries
    = Color_Unknown
    | Color_BT709_sRGB
@@ -1080,6 +1146,8 @@ data ColorPrimaries
 unmarshalColorPrimaries ∷ Word8 → ColorPrimaries
 unmarshalColorPrimaries = genToEnum
 
+-- | This field defines the opto-electronic transfer characteristic of
+-- the source picture also called the gamma function.
 data TransferCharacteristics
    = TransferCharacteristicUnknown
    | TransferCharacteristic_BT709
@@ -1094,6 +1162,8 @@ data TransferCharacteristics
 unmarshalTCharacteristics ∷ Word8 → TransferCharacteristics
 unmarshalTCharacteristics = genToEnum
 
+-- | Matrix used to compute luma and chroma values from the color
+-- primaries.
 data MatrixCoefficients
    = Matrix_Unknown
    | Matrix_BT709
@@ -1111,17 +1181,17 @@ unmarshalMatrixCoefficients = genToEnum
 --
 -- See Section 3.9 /VideoStreaming Interface Descriptors/ of the UVC
 -- specs.
-extractVideoStreamDesc ∷ Interface → VideoStreamingDesc
+extractVideoStreamDesc ∷ Interface → StreamingDescriptor
 extractVideoStreamDesc iface =
     let Just alternate = find (not ∘ B.null ∘ interfaceExtra) iface
         extra = interfaceExtra alternate
         number = interfaceNumber alternate
         Right xs = Get.runGet (parseVideoStreamInterfaces []) extra
-    in VideoStreamingDesc number xs
+    in StreamingDescriptor number xs
 
 -- | Begin to read a Video Streaming Interface header and dispatch to
 -- the right specialised parser.
-parseVideoStreamInterfaces ∷ [VSInterface] → Get.Get [VSInterface]
+parseVideoStreamInterfaces ∷ [StreamingInterface] → Get.Get [StreamingInterface]
 parseVideoStreamInterfaces acc = do
     atEnd ← Get.isEmpty
     if atEnd
@@ -1152,19 +1222,19 @@ parseVideoStreamInterfaces acc = do
 
 -- | Read VS Interface Input Header Descriptors as specified
 -- in USB Video Class 1.0a, table 3-13.
-parseVSInputHeader ∷ Int → Int → Int → Get.Get VSInterface
+parseVSInputHeader ∷ Int → Int → Int → Get.Get StreamingInterface
 parseVSInputHeader size total_size nformats = boundParser total_size $ do
 
   -- Parse header specific content.
   bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
-  bmInfo ← unmarshalVSCapability `fmap` Get.getWord8
+  bmInfo ← unmarshalStreamingCapability `fmap` Get.getWord8
   bTerminalLink ← Get.getWord8
   bStillCaptureMethod ← Get.getWord8
   bTriggerSupport ← unmarshalTriggerSupport `fmap` Get.getWord8
   bTriggerUsage ← unmarshalTriggerUsage `fmap` Get.getWord8
   bControlSize ← fromIntegral `fmap` Get.getWord8
   bmaControls ← replicateM nformats $ do
-                      bitmask ← unmarshalVSControl `fmap` Get.getWord8
+                      bitmask ← unmarshalStreamingControl `fmap` Get.getWord8
                       Get.skip (bControlSize - 1) -- skipping extra bits
                       return bitmask
 
@@ -1172,7 +1242,7 @@ parseVSInputHeader size total_size nformats = boundParser total_size $ do
   Get.skip (size - 7 - nformats * bControlSize)
 
   -- Parse the different formats.
-  formats ← mapM parseVSFormats bmaControls
+  formats ← mapM parseFormatDescriptors bmaControls
 
   return $ InputInterface
          { vsiEndpointAddress   = bEndpointAddress
@@ -1186,7 +1256,7 @@ parseVSInputHeader size total_size nformats = boundParser total_size $ do
 
 -- | Read VS Interface Output Header Descriptors as specified
 -- in USB Video Class 1.0a, table 3-14.
-parseVSOutputHeader ∷ Int → Int → Int → Get.Get VSInterface
+parseVSOutputHeader ∷ Int → Int → Int → Get.Get StreamingInterface
 parseVSOutputHeader size total_size nformats = boundParser total_size $ do
   bEndpointAddress ← unmarshalEndpointAddress `fmap` Get.getWord8
   bTerminalLink ← Get.getWord8
@@ -1198,7 +1268,7 @@ parseVSOutputHeader size total_size nformats = boundParser total_size $ do
 
      else do bControlSize ← fromIntegral `fmap` Get.getWord8
              xs ← replicateM nformats $ do
-                bitmask ← unmarshalVSControl `fmap` Get.getWord8
+                bitmask ← unmarshalStreamingControl `fmap` Get.getWord8
                 Get.skip (bControlSize - 1) -- skipping extra bits
                 return bitmask
              -- skip remaining descriptor bytes.
@@ -1206,7 +1276,7 @@ parseVSOutputHeader size total_size nformats = boundParser total_size $ do
              return xs
 
   -- Parse the different formats.
-  formats ← mapM parseVSFormats bmaControls
+  formats ← mapM parseFormatDescriptors bmaControls
 
   return $ OutputInterface
          { vsiEndpointAddress = bEndpointAddress
@@ -1216,8 +1286,8 @@ parseVSOutputHeader size total_size nformats = boundParser total_size $ do
 
 -- | Begin to read a Video Streaming Descriptor and dispatch to the
 -- right specialised parser.
-parseVSFormats ∷ BitMask VSControl → Get.Get VSFormat
-parseVSFormats ctrl = do
+parseFormatDescriptors ∷ BitMask StreamingControl → Get.Get FormatDescriptor
+parseFormatDescriptors ctrl = do
     bLength ← fromIntegral `fmap` Get.getWord8
     bDescriptorType ← Get.getWord8
     bDescriptorSubType ← Get.getWord8
@@ -1231,7 +1301,7 @@ parseVSFormats ctrl = do
     let fallback name = parseVSUnknownFormat name ctrl size
 
     case bDescriptorSubType of
-          VS_FORMAT_UNCOMPRESSED → parseVSFormatUncompressed ctrl size
+          VS_FORMAT_UNCOMPRESSED → parseFormatDescriptorUncompressed ctrl size
           VS_FORMAT_MJPEG        → fallback "FORMAT_MJPEG"
           VS_FORMAT_MPEG2TS      → fallback "FORMAT_MPEG2TS"
           VS_FORMAT_DV           → fallback "FORMAT_DV"
@@ -1239,12 +1309,12 @@ parseVSFormats ctrl = do
           VS_FORMAT_STREAM_BASED → fallback "FORMAT_STREAM_BASED"
           _ → fallback $ "FORMAT_(" ⧺ show bDescriptorSubType ⧺ ")"
 
-parseVSUnknownFormat ∷ String → BitMask VSControl → Int → Get.Get VSFormat
+parseVSUnknownFormat ∷ String → BitMask StreamingControl → Int → Get.Get FormatDescriptor
 parseVSUnknownFormat name ctrl size = do
     bFormatIndex ← Get.getWord8
     bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
     Get.skip (size - 2) -- skip the rest of the format header.
-    frames ← replicateM bNumFrameDescriptors parseVSFrame
+    frames ← replicateM bNumFrameDescriptors parseFrameDescriptor
     mstillimage ← parseVSStillImageFrame
     mcolors ← parseVSColorMatching
     return $ UnknownFormatDescriptor ctrl bFormatIndex name
@@ -1252,8 +1322,8 @@ parseVSUnknownFormat name ctrl size = do
 
 -- | Read Uncompressed Video Format Descriptors as specified
 -- in USB Video Class 1.0a / Payload_uncompressed, table 3-1.
-parseVSFormatUncompressed ∷ BitMask VSControl → Int → Get.Get VSFormat
-parseVSFormatUncompressed ctrl size = do
+parseFormatDescriptorUncompressed ∷ BitMask StreamingControl → Int → Get.Get FormatDescriptor
+parseFormatDescriptorUncompressed ctrl size = do
     bFormatIndex ← Get.getWord8
     bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
     guidFormat ← unmarshalGuidFormat `fmap` Get.getByteString 16
@@ -1265,7 +1335,7 @@ parseVSFormatUncompressed ctrl size = do
     bCopyProtect ← (≡ 0x01) `fmap` Get.getWord8
     Get.skip (size - 24) -- 24 ≡ length consumed by the previous operations.
 
-    frames ← replicateM bNumFrameDescriptors parseVSFrame
+    frames ← replicateM bNumFrameDescriptors parseFrameDescriptor
     mstillframe ← parseVSStillImageFrame
     mcolors ← parseVSColorMatching
 
@@ -1285,8 +1355,8 @@ parseVSFormatUncompressed ctrl size = do
            }
 
 -- | Parse frames or color matching descriptors.
-parseVSFrame ∷ Get.Get VSFrame
-parseVSFrame = do
+parseFrameDescriptor ∷ Get.Get FrameDescriptor
+parseFrameDescriptor = do
     bLength ← fromIntegral `fmap` Get.getWord8
     bDescriptorType ← Get.getWord8
     bDescriptorSubType ← Get.getWord8
@@ -1301,7 +1371,7 @@ parseVSFrame = do
             return (UnknownFrameDescriptor name)
 
     case bDescriptorSubType of
-       VS_FRAME_UNCOMPRESSED  → parseVSFrameUncompressed size
+       VS_FRAME_UNCOMPRESSED  → parseFrameDescriptorUncompressed size
        VS_STILL_IMAGE_FRAME   → fallback "STILL_IMAGE_FRAME"
        VS_FRAME_MJPEG         → fallback "FRAME_MJPEG"
        VS_FRAME_FRAME_BASED   → fallback "FRAME_FRAME_BASED"
@@ -1309,8 +1379,8 @@ parseVSFrame = do
 
 -- | Read Uncompressed Video Frame Descriptors as specified
 -- in USB Video Class 1.0a / Payload_uncompressed, table 3-2.
-parseVSFrameUncompressed ∷ Int → Get.Get VSFrame
-parseVSFrameUncompressed size = boundParser size $ do
+parseFrameDescriptorUncompressed ∷ Int → Get.Get FrameDescriptor
+parseFrameDescriptorUncompressed size = boundParser size $ do
     bFrameIndex ← Get.getWord8
     bmCapabilities ← unmarshalUncompressedCapabilities `fmap` Get.getWord8
     wWidth ← fromIntegral `fmap` Get.getWord16le

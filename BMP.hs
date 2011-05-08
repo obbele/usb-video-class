@@ -23,10 +23,10 @@ main = writeBMPImages
 -- | Convert an YUY2 raw stream to a set of RGBA 'BMP' files.
 -- This function is not optimised and consume /a lot/ of CPU ressources.
 writeBMPImages ∷ IO ()
-writeBMPImages = findVideoDevice ≫= getVideoDevice ≫= \video →
+writeBMPImages = findVideoDevice ≫= \video →
   withVideoDeviceHandle video $ \devh → do
     ctrl ← negotiatePCControl video devh (defaultProbeCommitControl video)
-    VideoPipe fmt _ w h xs ← readVideoData video devh ctrl nframes timeout
+    Pipe fmt _ w h xs ← readNFrames video devh ctrl nframes timeout
     let frames = reorderFrames w h xs
         bitmaps = case fmt of
             NV12 → map (rgbaToBMP w h ∘ nv12ToRGBA w h) frames
@@ -46,12 +46,12 @@ writeBMPImages = findVideoDevice ≫= getVideoDevice ≫= \video →
         writeBMP filename x
         foo (i+1) xs
 
-findVideoDevice ∷ IO Device
+findVideoDevice ∷ IO VideoDevice
 findVideoDevice = newCtx ≫= getDevices ≫= \devices →
     case find hasVideoInterface devices of
          Nothing → error "Video device not found !"
          Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
-                      return d
+                      return $ videoDescription d
 
 -- | Convert a raw RGBA frame of dimension @Width@x@Height@ to an RGBA
 -- 'BMP' image.
@@ -72,4 +72,3 @@ reorderBMPByteString w bs =
                | otherwise = cut (B.take l xs:acc) (B.drop l xs)
 
     l = w * 4 -- width * 4 bits per pixel (rgb+a)
-

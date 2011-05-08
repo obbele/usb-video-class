@@ -14,8 +14,9 @@ module System.USB.UVC.Streaming
     , PresentationTimeStamp
 
     -- * Video data streaming
-    , VideoPipe(..)
-    , readVideoData
+    , Pipe(..)
+    , Frame
+    , readNFrames
     , reorderFrames
     , intervalToFPS
 
@@ -62,9 +63,12 @@ import Prelude.Unicode            ( (⊥), (∧), (≡), (≤), (≥)
 -- Video Data retrieving.
 ----------------------------------------------------------------------}
 
+-- | Symbolic typename for USB payloads pre-processed to video frames.
+type Frame  = B.ByteString
+
 -- | A data type holding the information needed to decode an
 -- uncompressed video stream.
-data VideoPipe = VideoPipe
+data Pipe = Pipe
     { vpFormat ∷ CompressionFormat
     , vpColors ∷ Maybe ColorMatching
     , vpWidth  ∷ Width
@@ -73,8 +77,8 @@ data VideoPipe = VideoPipe
     -- , vpStarved ∷ Bool
     } deriving (Eq, Data, Typeable)
 
-instance Show VideoPipe where
-    show x = printf "VideoPipe { vpFormat = %s, \\
+instance Show Pipe where
+    show x = printf "Pipe { vpFormat = %s, \\
                     \vpColors = %s, \\
                     \vpWidth = %d, vpHeight = %d, \\
                     \vpFrames = [%d frames] }"
@@ -87,9 +91,9 @@ instance Show VideoPipe where
 -- | Read video frames.
 -- Throw 'InvalidParamException' if the dwMaxPayloadTransferSize requested
 -- by the ProbeCommitControl could not be found.
-readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
-              → Timeout → IO VideoPipe
-readVideoData video devh ctrl nframes timeout = do
+readNFrames ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
+            → Timeout → IO Pipe
+readNFrames video devh ctrl nframes timeout = do
     let transferSize = pcMaxPayloadTransferSize ctrl
         interface    = head ∘ videoStreams $ video
         endpoint     = vsiEndpointAddress
@@ -145,7 +149,7 @@ readVideoData video devh ctrl nframes timeout = do
     -- we cheat here since our headers have a SCR field.
     --let xs = sortBy (compare `on` scrTime) frames
 
-    return $ VideoPipe
+    return $ Pipe
            { vpFormat = format
            , vpColors = colors
            , vpWidth  = w

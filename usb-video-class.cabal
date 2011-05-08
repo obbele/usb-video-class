@@ -85,7 +85,7 @@ executable test
 
   include-dirs: include
 
-executable test_bmp
+executable bmp
   GHC-Options: -Wall
   GHC-Options: -fno-warn-unused-do-bind
   GHC-Options: -threaded
