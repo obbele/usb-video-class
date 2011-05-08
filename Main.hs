@@ -6,7 +6,7 @@ import qualified Control.Exception as E
 import qualified Data.ByteString   as B
 
 import System.USB
-import System.USB.UVC.Internals
+import System.USB.UVC
 
 import Control.Monad
 import Data.List                ( find )

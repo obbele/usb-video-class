@@ -6,13 +6,13 @@ module Codec.UVC.RGBA ( yuy2ToRGBA, nv12ToRGBA ) where
 import qualified Control.Exception as E
 import qualified Data.ByteString   as B
 
-import System.USB.UVC.Internals ( Width, Height )
+import System.USB.UVC.Descriptors ( Width, Height )
 
-import System.USB               ( USBException(IOException) )
-import Data.Bits                ( shiftR )
-import Data.Word                ( Word8 )
+import System.USB                 ( USBException(IOException) )
+import Data.Bits                  ( shiftR )
+import Data.Word                  ( Word8 )
 
-import Prelude.Unicode          ( (≥), (∘) )
+import Prelude.Unicode            ( (≥), (∘) )
 
 {----------------------------------------------------------------------
 -- Converting from YUY2 to RGBA pixels.

@@ -1,25 +1,23 @@
-{-# LANGUAGE BangPatterns #-} -- where are they coming from ?
-{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
+{-# LANGUAGE UnicodeSyntax #-}
 {-# LANGUAGE CPP #-}
-
 
 -- Ho man ! How much would I like to have a library in Haskell similar
 -- to Common-Lisp's gigamonkeys binary-data.
 
-module System.USB.UVC.Internals
-{-
-    (
-    -- * The VideoDevice and its interface association
-      VideoDevice(..)
+module System.USB.UVC.Descriptors
+    ( VideoDevice(..)
     , getVideoDevice
     , hasVideoInterface
 
-    -- * VideoDevice handling
-    , withVideoDeviceHandle
-    , unsafeOpenVideoDevice
-    , unsafeCloseVideoDevice
+    -- * Common types
+    , Width
+    , Height
+    , Frame
+    , FormatIndex
+    , FrameIndex
+    , FrameInterval
+    , GUID(..)
 
     -- * VideoStreaming Interface Descriptors
     --, extractVideoStreamDesc
@@ -41,6 +39,7 @@ module System.USB.UVC.Internals
     , StillCaptureMethod
     , getFramesUncompressed
     , getFormatUncompressed
+    , isFormatUncompressed
 
     -- * VideoControl Interface Descriptor
     --, extractVideoControlDesc
@@ -52,229 +51,45 @@ module System.USB.UVC.Internals
     , TerminalType(..)
     , CameraControl(..)
 
-    -- * Video control requests
-    , VideoRequestType(..)
-    , VideoRequest(..)
-
-    -- * Probe and Commit Control
-    , ProbeCommitControl(..)
-    , ProbeHint(..)
-    , negotiatePCControl
-    , tryPCControl
-    , simplestProbeCommitControl
-    , defaultProbeCommitControl
-    , customProbeCommitControl
-    , probeCommitSet
-    , probeCommitGet
-    , ProbeAction(..)
-
-    -- * Uncompressed stream header
-    , extractStreamHeader
-    , StreamHeader(..)
-    , StreamHeaderFlag(..)
-    , Parity(..)
-    , SourceClockReference
-    , PresentationTimeStamp
-
-    -- * Video data streaming
-    , VideoPipe(..)
-    , readVideoData
-    , reorderFrames
-    , intervalToFPS
-
-    -- * Common types
-    , Width
-    , Height
-    , Frame
-    , FormatIndex
-    , FrameIndex
-    , FrameInterval
-    , GUID(..)
     ) where
--}
-    where
 
 -- Qualified imports.
 import qualified Data.ByteString    as B
-import qualified Control.Exception  as E
 import qualified Data.Serialize.Get as Get
-import qualified Data.Serialize.Put as Put
 
 -- Private libraries.
-import Utils                   ( bits, genToEnum, genFromEnum )
-import ExtraUtils              ( unmarshalBitmask, marshalBitmask
-                               , BitMask(..), BitMaskTable
-                               , getUSBString )
+#include <uvc.h>
+import Utils                 ( bits, genToEnum )
+import ExtraUtils            ( unmarshalBitmask, BitMask(..), BitMaskTable
+                             , getUSBString )
 
 -- Third parties.
 import System.USB
-import System.USB.Internal     ( unmarshalStrIx, unmarshalReleaseNumber
-                               , unmarshalEndpointAddress )
-import Data.Serialize          ( Serialize(..) )
+import System.USB.Internal   ( unmarshalStrIx, unmarshalReleaseNumber
+                             , unmarshalEndpointAddress )
 
--- Private base system.
-import Control.Arrow           ( (&&&) )
-import Control.Applicative     ( (<|>) )
-import Control.Monad           ( replicateM_, replicateM, when )
-import Control.Concurrent      ( threadDelay, forkIO )
-import Control.Concurrent.Chan ( newChan, readChan, writeChan )
-import Control.Concurrent.MVar ( MVar, newEmptyMVar, newMVar, readMVar
-                               , takeMVar, putMVar, modifyMVar, modifyMVar_ )
-import Data.Bits               ( Bits, testBit, (.|.), shiftL )
-import Data.Data               ( Data )
-import Data.Function           ( on )
-import Data.List               ( find, minimumBy, foldl', sortBy )
-import Data.Maybe              ( catMaybes )
-import Data.Typeable           ( Typeable )
-import Data.Word               ( Word8, Word16, Word32 )
-import Text.Printf             ( printf )
-import System.IO               ( stdout, hSetBuffering, BufferMode(..) )
+-- Base System.
+import Control.Applicative   ( (<|>) )
+import Control.Monad         ( replicateM, when )
+import Data.Bits             ( Bits, testBit )
+import Data.Data             ( Data )
+import Data.List             ( find )
+import Data.Maybe            ( catMaybes )
+import Data.Typeable         ( Typeable )
+import Data.Word             ( Word8, Word16, Word32 )
+import Text.Printf           ( printf )
 
-import Control.Monad.Unicode   ( (≫=), (≫) )
-import Data.List.Unicode       ( (⧺) )
-import Prelude.Unicode         ( (⊥), (∧), (∨), (≡), (≠), (≤), (≥)
-                               , (⋅), (∘), (∈) )
+import Control.Monad.Unicode ( (≫=), (≫) )
+import Data.List.Unicode     ( (⧺) )
+import Prelude.Unicode       ( (∧), (∨), (≡), (≠), (≤), (∘), (∈) )
 
 {----------------------------------------------------------------------
--- Boring stuff.
--- Note that before theses CPP lines, the Haskell code should be able to
--- run withtout any "vulgar" reference to the UVC specifications.
+-- Abstracting the video descriptors quite a long way away.
 ----------------------------------------------------------------------}
 
-#define INTERFACE_ASSOCIATION                     0x0B
-
--- USB Video Class 1.1
--- A1: Video Interface Class Code
-#define CC_VIDEO                                  0x0E
--- A2: Video Subclass Code
-#define SC_UNDEFINED                              0x00
-#define SC_VIDEOCONTROL                           0x01
-#define SC_VIDEOSTREAMING                         0x02
-#define SC_VIDEO_INTERFACE_COLLECTION             0x03
--- A3: Video Interface Procotol
-#define PC_PROTOCOL_UNDEFINED                     0x00
--- A4: Video Class-Specific Descriptor types
-#define CS_UNDEFINED                              0x20
-#define CS_DEVICE                                 0x21
-#define CS_CONFIGURATION                          0x22
-#define CS_STRING                                 0x23
-#define CS_INTERFACE                              0x24
-#define CS_ENDPOINT                               0x25
--- A5: Video Class-Specific VC Interface Descriptor Subtypes
-#define VC_DESCRIPTOR_UNDEFINED                   0x00
-#define VC_HEADER                                 0x01
-#define VC_INPUT_TERMINAL                         0x02
-#define VC_OUTPUT_TERMINAL                        0x03
-#define VC_SELECTOR_UNIT                          0x04
-#define VC_PROCESSING_UNIT                        0x05
-#define VC_EXTENSION_UNIT                         0x06
--- A6: Video Class-Specific VS Interface Descriptor Subtypes
-#define VS_UNDEFINED                              0x00
-#define VS_INPUT_HEADER                           0x01
-#define VS_OUTPUT_HEADER                          0x02
-#define VS_STILL_IMAGE_FRAME                      0x03
-#define VS_FORMAT_UNCOMPRESSED                    0x04
-#define VS_FRAME_UNCOMPRESSED                     0x05
-#define VS_FORMAT_MJPEG                           0x06
-#define VS_FRAME_MJPEG                            0x07
-#define VS_FORMAT_MPEG2TS                         0x0A
-#define VS_FORMAT_DV                              0x0C
-#define VS_COLORFORMAT                            0x0D
-#define VS_FORMAT_FRAME_BASED                     0x10
-#define VS_FRAME_FRAME_BASED                      0x11
-#define VS_FORMAT_STREAM_BASED                    0x12
--- A7: Video Class-Specific Endpoint Descriptor Subtypes
-#define EP_UNDEFINED                              0x00
-#define EP_GENERAL                                0x01
-#define EP_ENDPOINT                               0x02
-#define EP_INTERRUPT                              0x03
--- A8: Video Class-Specific Request Codes
-#define RC_UNDEFINED                              0x00
-#define SET_CUR                                   0x01
-#define GET_CUR                                   0x81
-#define GET_MIN                                   0x82
-#define GET_MAX                                   0x83
-#define GET_RES                                   0x84
-#define GET_LEN                                   0x85
-#define GET_INFO                                  0x86
-#define GET_DEF                                   0x87
--- A9.1: VideoControl Interface Control Selectors
-#define VC_CONTROL_UNDEFINED                      0x00
-#define VC_VIDEO_POWER_MODE_CONTROL               0x01
-#define VC_REQUEST_ERROR_CODE_CONTROL             0x02
--- A9.2: Terminal Control Selectors
-#define TE_CONTROL_UNDEFINED                      0x00
--- A9.3: Selector Unit Control Selectors
-#define SU_CONTROL_UNDEFINED                      0x00
-#define SU_INPUT_SELECT_CONTROL                   0x01
--- A9.4: Camera Terminal Control Selectors
-#define CT_CONTROL_UNDEFINED                      0x00
-#define CT_SCANNING_MODE_CONTROL                  0x01
-#define CT_AE_MODE_CONTROL                        0x02
-#define CT_AE_PRIORITY_CONTROL                    0x03
-#define CT_EXPOSURE_TIME_ABSOLUTE_CONTROL         0x04
-#define CT_EXPOSURE_TIME_RELATIVE_CONTROL         0x05
-#define CT_FOCUS_ABSOLUTE_CONTROL                 0x06
-#define CT_FOCUS_RELATIVE_CONTROL                 0x07
-#define CT_FOCUS_AUTO_CONTROL                     0x08
-#define CT_IRIS_ABSOLUTE_CONTROL                  0x09
-#define CT_IRIS_RELATIVE_CONTROL                  0x0A
-#define CT_ZOOM_ABSOLUTE_CONTROL                  0x0B
-#define CT_ZOOM_RELATIVE_CONTROL                  0x0C
-#define CT_PANTILT_ABSOLUTE_CONTROL               0x0D
-#define CT_PANTILT_RELATIVE_CONTROL               0x0E
-#define CT_ROLL_ABSOLUTE_CONTROL                  0x0F
-#define CT_ROLL_RELATIVE_CONTROL                  0x10
-#define CT_PRIVACY_CONTROL                        0x11
--- A9.5: Processing Unit Control Selectors
-#define PU_CONTROL_UNDEFINED                      0x00
-#define PU_BACKLIGHT_COMPENSATION_CONTROL         0x01
-#define PU_BRIGHTNESS_CONTROL                     0x02
-#define PU_CONTRAST_CONTROL                       0x03
-#define PU_GAIN_CONTROL                           0x04
-#define PU_POWER_LINE_FREQUENCY_CONTROL           0x05
-#define PU_HUE_CONTROL                            0x06
-#define PU_SATURATION_CONTROL                     0x07
-#define PU_SHARPNESS_CONTROL                      0x08
-#define PU_GAMMA_CONTROL                          0x09
-#define PU_WHITE_BALANCE_TEMPERATURE_CONTROL      0x0A
-#define PU_WHITE_BALANCE_TEMPERATURE_AUTO_CONTROL 0x0B
-#define PU_WHITE_BALANCE_COMPONENT_CONTROL        0x0C
-#define PU_WHITE_BALANCE_COMPONENT_AUTO_CONTROL   0x0D
-#define PU_DIGITAL_MULTIPLIER_CONTROL             0x0E
-#define PU_DIGITAL_MULTIPLIER_LIMIT_CONTROL       0x0F
-#define PU_HUE_AUTO_CONTROL                       0x10
-#define PU_ANALOG_VIDEO_STANDARD_CONTROL          0x11
-#define PU_ANALOG_LOCK_STATUS_CONTROL             0x12
--- A9.6: Extension Unit Control Selectors
-#define XU_CONTROL_UNDEFINED                      0x00
--- A9.7: VideoStreaming Interface Control Selectors
-#define VS_CONTROL_UNDEFINED                      0x00
-#define VS_PROBE_CONTROL                          0x01
-#define VS_COMMIT_CONTROL                         0x02
-#define VS_STILL_PROBE_CONTROL                    0x03
-#define VS_STILL_COMMIT_CONTROL                   0x04
-#define VS_STILL_IMAGE_TRIGGER_CONTROL            0x05
-#define VS_STREAM_ERROR_CODE_CONTROL              0x06
-#define VS_GENERATE_KEY_FRAME_CONTROL             0x07
-#define VS_UPDATE_FRAME_SEGMENT_CONTROL           0x08
-#define VS_SYNCH_DELAY_CONTROL                    0x09
--- B1: USB Terminal Types
-#define TT_VENDOR_SPECIFIC                        0x0100
-#define TT_STREAMING                              0x0101
--- B2: Input Terminal Types
-#define ITT_VENDOR_SPECIFIC                       0x0200
-#define ITT_CAMERA                                0x0201
-#define ITT_MEDIA_TRANSPORT_INPUT                 0x0202
--- B3: Output Terminal Types
-#define OTT_VENDOR_SPECIFIC                       0x0300
-#define OTT_DISPLAY                               0x0301
-#define OTT_MEDIA_TRANSPORT_OUTPUT                0x0302
--- B4: External Terminal Types
-#define EXTERNAL_VENDOR_SPECIFIC                  0x0400
-#define COMPOSITE_CONNECTOR                       0x0401
-#define SVIDEO_CONNECTOR                          0x0402
-#define COMPONENT_CONNECTOR                       0x0403
+type Width  = Int
+type Height = Int
+type Frame  = B.ByteString
 
 -- | Global Unique Identifier.
 -- Used to identify video formats and vendor specific extension units.
@@ -334,856 +149,6 @@ guid_NV12 = GUID $ B.pack [ 0x4E, 0x56, 0x31, 0x32
                           , 0x00, 0x38, 0x9B, 0x71]
 
 {----------------------------------------------------------------------
--- Abstracting the video function quite a long way away.
-----------------------------------------------------------------------}
-
-type Width  = Int
-type Height = Int
-type Frame  = B.ByteString
-
-{----------------------------------------------------------------------
--- Video Data retrieving.
-----------------------------------------------------------------------}
-
--- | A data type holding the information needed to decode an
--- uncompressed video stream.
-data VideoPipe = VideoPipe
-    { vpFormat ∷ CompressionFormat
-    , vpColors ∷ Maybe ColorMatching
-    , vpWidth  ∷ Width
-    , vpHeight ∷ Height
-    , vpFrames ∷ [Frame] -- FIXME: use a Chan instead of a (lazy?) list.
-    -- , vpStarved ∷ Bool
-    } deriving (Eq, Data, Typeable)
-
-instance Show VideoPipe where
-    show x = printf "VideoPipe { vpFormat = %s, \\
-                    \vpColors = %s, \\
-                    \vpWidth = %d, vpHeight = %d, \\
-                    \vpFrames = [%d frames] }"
-                    (show $ vpFormat x)
-                    (show $ vpColors x)
-                    (vpWidth x)
-                    (vpHeight x)
-                    (length $ vpFrames x)
-
--- | Read video frames.
--- Throw 'InvalidParamException' if the dwMaxPayloadTransferSize requested
--- by the ProbeCommitControl could not be found.
-readVideoData ∷ VideoDevice → DeviceHandle → ProbeCommitControl → Int
-              → Timeout → IO VideoPipe
-readVideoData video devh ctrl nframes timeout = do
-    let transferSize = pcMaxPayloadTransferSize ctrl
-        interface    = head ∘ videoStreams $ video
-        endpoint     = vsiEndpointAddress
-                     ∘ head ∘ vsdInterfaces
-                     ∘ head ∘ videoStrDescs
-                     $ video
-
-        altsetting = findIsochronousAltSettings interface endpoint transferSize
-
-        -- Extractin _a lot_ of information from our video device
-        -- and our control parameters.
-        altInterface = interface !! fromIntegral altsetting
-        interfaceN   = interfaceNumber altInterface
-        frameSize    = pcMaxVideoFrameSize ctrl
-        interval     = pcFrameInterval ctrl
-
-        -- Compute the number of isopackets and their size
-        -- based on the frame size.
-        -- N.B.: the number of packets is caped to 64. I don't
-        -- know why but the system could not process high-res
-        -- frame requiring npackets > 2000.
-        ratio ∷ Double
-        ratio = fromIntegral frameSize / fromIntegral transferSize
-        npackets ∷ Int
-        npackets = if ratio > 64 then 64 else 1 + ceiling ratio
-        sizes = replicate npackets transferSize
-
-        -- ajusting the interval according to the actual number
-        -- of packets.
-        isopayload = npackets * transferSize
-        ratio' ∷ Double
-        ratio' = fromIntegral isopayload
-               * fromIntegral interval
-               / fromIntegral frameSize
-        interval' = round ratio' + 1
-
-        -- Additionnal information.
-        fmtDsc = getFormatUncompressed video
-        format = fFormat fmtDsc
-        colors = fColors fmtDsc
-        (w,h)  = (fWidth &&& fHeight)
-               ∘ head
-               ∘ filter (\f → fFrameIndex f ≡ pcFrameIndex ctrl)
-               ∘ getFramesUncompressed
-               $ video
-
-    printIsoInformations transferSize frameSize npackets
-                         interval format w h
-
-    frames ← withInterfaceAltSetting devh interfaceN altsetting $
-        retrieveNFrames devh endpoint sizes interval' timeout nframes
-
-    -- we cheat here since our headers have a SCR field.
-    --let xs = sortBy (compare `on` scrTime) frames
-
-    return $ VideoPipe
-           { vpFormat = format
-           , vpColors = colors
-           , vpWidth  = w
-           , vpHeight = h
-           , vpFrames = frames
-           }
-
-type Lock = MVar ()
-
--- | Execute a computation in a separate thread and provide a 'Lock' to
--- wait for its termination.
-boundWorker ∷ IO () → IO Lock
-boundWorker io = do
-    lock ← newEmptyMVar
-    forkIO $ io `E.finally` putMVar lock ()
-    return lock
-
--- | Wait until a 'boundWorder' has finished.
-waitBoundWorker ∷ Lock → IO ()
-waitBoundWorker = takeMVar
-
--- | Retrieve n frames from an isochronous endpoint.
-retrieveNFrames ∷ DeviceHandle
-                → EndpointAddress   -- ^ an isochronous endpoint
-                → [Int]             -- ^ size of the packets
-                → FrameInterval
-                → Timeout
-                → Int               -- ^ number of frames
-                → IO [Frame]
-retrieveNFrames devh addr sizes interval timeout nframes = do
-    let nworkers = 10
-        deltaT = interval `div` (fromIntegral nworkers)
-
-    count ← newMVar 0
-    chan  ← newChan
-
-    let readStream = handleShutdown count $ do
-          xs ← readIsochronous devh addr sizes timeout
-          writeChan chan xs
-
-          done ← (≥ nframes) `fmap` readMVar count
-          if done
-             then return () -- end
-             else waitFrameInterval interval ≫ readStream -- loop
-
-    E.bracket
-        -- launch (length ids) boundWorkers.
-        --(replicateM nworkers (boundWorker readStream))
-        (mapM (\i → waitFrameInterval (deltaT * i)
-                    ≫ boundWorker readStream) [1..nworkers])
-
-
-        -- When interrupted/finished, assert the end
-        -- and wait for every background threads.
-        (\workers → do modifyMVar_ count (\_ → return nframes)
-                       mapM_ waitBoundWorker workers)
-
-        -- Do it: retrieved iso-packet frames.
-        (\_ → withUnbufferStdout $ consumeVideoStream [] chan count)
-
-
-  where
-    consumeVideoStream acc chan count = do
-        xs ← readChan chan
-        putStr "."
-
-        -- FIXME: do not recompute stream header each times.
-        let newFrames = length ∘ filter isEndOfFrame $ xs
-
-        n' ← modifyMVar count $ \n → return (n + newFrames, n + newFrames)
-        if n' ≥ nframes
-           then return ∘ concat ∘ reverse $ (xs:acc)
-           else consumeVideoStream (xs:acc) chan count
-
-    -- When a background worker encounter an exception, just stop
-    -- processing video data by setting (count = nframes).
-    handleShutdown ∷ MVar Int → IO () → IO ()
-    handleShutdown count io = E.catch io (shutdown count)
-
-    shutdown ∷ MVar Int → E.SomeException → IO ()
-    shutdown count _ = modifyMVar_ count (\_ → return nframes)
-
--- | Print a handful bunch of information concerning a video stream.
-printIsoInformations ∷ Int → Int → Int
-                     → FrameInterval → CompressionFormat → Int → Int
-                     → IO ()
-printIsoInformations xferSize frameSize npackets ival fmt w h = do
-    printf "----------------------------------\n"
-    printf "dwMaxVideoFrameSize:       %7d\n"     frameSize
-    printf "Number of iso packets:     %7d\n"     npackets
-    printf "Iso-packets size:          %7d\n"     xferSize
-    printf "FrameInterval: (*100ns)    %7d\n"     ival
-    printf "Frames per second:          %6.2f\n"  fps
-    printf "FormatUncompressed:           %s\n"   (show fmt)
-    printf "Dimensions:              %9s\n"       dimensions
-    printf "----------------------------------\n"
-
-  where
-    fps = intervalToFPS ival
-
-    dimensions ∷ String
-    dimensions = printf "%dx%d" w h
-
--- | Search a (stream) interface and select the correct alt-setting for
--- which the isochronous endpoint has a payload equal or greater than
--- xferSize.
---
--- Throw 'InvalidParamException' if the dwMaxPayloadTransferSize requested
--- by the ProbeCommitControl could not be found.
-findIsochronousAltSettings ∷ Interface → EndpointAddress → Int
-                           → InterfaceAltSetting
-findIsochronousAltSettings iface epaddr xferSize =
-    case find (\(size,_) → xferSize ≤ size) sizesAltsettings of
-      Nothing   → E.throw InvalidParamException
-      Just (_,x)→ x
-  where
-    -- An association list of (size, alt-setting) orderded by increasing
-    -- size.
-    sizesAltsettings ∷ [(Int, InterfaceAltSetting)]
-    sizesAltsettings = sortBy (compare `on` fst)
-                     ∘ map (getSize &&& interfaceAltSetting)
-                     ∘ getAlt
-                     $ iface
-
-    -- Compute the endpoint transfer size for every alt-settings.
-    getSize ∷ InterfaceDesc → Int
-    getSize = epSize ∘ head ∘ filter isOurEndpoint ∘ interfaceEndpoints
-
-    -- Select an alternate setting having the desired endpoint.
-    getAlt ∷ Interface → [InterfaceDesc]
-    getAlt = filter (any isOurEndpoint ∘ interfaceEndpoints)
-
-    -- Predicate on our endpoint address.
-    isOurEndpoint = \ep → endpointAddress ep ≡ epaddr
-
-    -- MaxPacketSize of an isochronous endpoint ≡ packet_size ⋅ x
-    -- where x is the number of packets, i.e opportunity + 1.
-    epSize ep = let MaxPacketSize x y = endpointMaxPacketSize ep
-                in x ⋅ (1 + fromEnum y)
-
--- | Convert from units of 100 ns to 'threadDelay' microseconds.
-waitFrameInterval ∷ FrameInterval → IO ()
-waitFrameInterval t = threadDelay (fromIntegral t `div` 10)
-
--- Interval is in units of 100ns
--- ⇒ There is 1e7 units of 100ns in one second …
-intervalToFPS ∷ FrameInterval → Float
-intervalToFPS x = 10000000 / fromIntegral x
-
-withInterfaceAltSetting ∷ DeviceHandle
-                        → InterfaceNumber → InterfaceAltSetting
-                        → IO α → IO α
-withInterfaceAltSetting devh iface alt io =
-    E.bracket_ (setInterfaceAltSetting devh iface alt)
-               (setInterfaceAltSetting devh iface 0)
-               (threadDelay 500 ≫ io)
-
-withUnbufferStdout ∷ IO α → IO α
-withUnbufferStdout =
-    E.bracket_ (hSetBuffering stdout NoBuffering)
-               (hSetBuffering stdout LineBuffering ≫ putStr "\n")
-
-{----------------------------------------------------------------------
--- Decoding uncompressed video frames.
-----------------------------------------------------------------------}
-
--- | Given a list of ordered payload, returns a list of raw data yuy2
--- frames. That is we skip empty payloads, remove frame headers and
--- concatenate together the different payloads of a single image frame.
--- Last but not the least, we assert that every frame as a correct size.
-reorderFrames ∷ Int → Int → [B.ByteString] → [Frame]
-reorderFrames w h bs =
-    map normalizeSize ∘ groupFrames ∘ removeEmptyPayload $ bs
-
-  where
-    -- remove empty payloads (whose size is inferior to the stream
-    -- header minimum).
-    removeEmptyPayload = filter ((> 2) ∘ B.length)
-
-    groupFrames xs =
-        let (result, _, _) = foldl' groupFrame ([], [], []) xs
-        in reverse result
-
-    -- Maintain two frame buffer, one odds and one even.
-    -- Flush the appropriate buffer when receiving an EndOfFrame.
-    groupFrame (acc, evens, odds) x
-
-        -- Flush the buffer.
-        | endOfFrame
-        ∧ (parity ≡ Odd)   = let frame = makeFrame (payload:odds)
-                             in (frame:acc, evens, [])
-
-        | endOfFrame
-        ∧ (parity ≡ Even)  = let frame = makeFrame (payload:evens)
-                             in (frame:acc, [], odds)
-
-        -- add this payload to the appropriate frame.
-        | (parity ≡ Odd)   = (acc, evens, payload:odds)
-
-        | (parity ≡ Even)  = (acc, payload:evens, odds)
-
-        -- Ignore anything else.
-        | otherwise        = (acc, evens, odds)
-
-      where
-        payload       = removeStreamHeader x
-        StreamHeader (BitMask flags) _ _ = extractStreamHeader x
-        endOfFrame    = EndOfFrame ∈ flags
-        parity        = if FID Odd ∈ flags then Odd else Even
-        makeFrame     = B.concat ∘ reverse
-
-        -- XXX: we don't use PTS and SCR slots.
-        -- it works without them, so why bother ?
-        --scrTime f = let StreamHeader _ _ (Just (t,_)) = extractStreamHeader f in t
-        --ptsTime f = let StreamHeader _ (Just t) _ = extractStreamHeader f in t
-
-    -- FIXME: Size should be with * height * (2 =?= bits-per-pixel)
-    normalizeSize x =
-        let actualSize = B.length x
-            frameSize  = w * h * 2
-        in case compare actualSize frameSize of
-             -- pad the image if our stream was truncated.
-             LT → B.append x (B.replicate (frameSize - actualSize) 0)
-
-             -- the first frame is often too big.
-             -- truncating to a correct size.
-             GT → B.drop (actualSize - frameSize) x
-
-             EQ → x
-
-removeStreamHeader ∷ B.ByteString → B.ByteString
-removeStreamHeader bs = B.drop l bs
-  where
-    l = fromIntegral $ B.head bs -- bLength is the first byte.
-
-isEndOfFrame ∷ B.ByteString → Bool
-isEndOfFrame bs =
-    let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
-    in EndOfFrame ∈ xs
-
-{----------------------------------------------------------------------
--- (Uncompressed) Payload Frame Header.
-----------------------------------------------------------------------}
-
--- | The first 32 bits is th source time clock in native device clock
--- units. The following 16 bits is a 1KHz SOF token counter.
--- See UVC specification 1.0a, table 2-6.
-type SourceClockReference = (Word32, Word16)
-
--- | The source clock time in native device clock units when the raw
--- frame capture begins. This field may be repeated for multiple payload
--- transfers comprising a single video frame, with the restriction that
--- the value shall remain the same throughout that video frame.
--- /UVC v1.1 only: the PTS is in the same units as specified in the/
--- /pcCloClockFrequency field of the Video Probe Control response/.
-type PresentationTimeStamp = Word32
-
--- | Each isopacket payload comes with a header.
--- See UVC specifications, section 2.4.3.3 /Video and Still Image Payload Headers/
--- for more information.
-data StreamHeader = StreamHeader !(BitMask StreamHeaderFlag)
-                                 !(Maybe PresentationTimeStamp)
-                                 !(Maybe SourceClockReference)
-    deriving (Eq, Show, Data, Typeable)
-
--- | For frame-based formats, this flag toggles between Even and Odd
--- every time a new video frame begins.
-data Parity = Odd | Even
-    deriving (Eq, Show, Data, Typeable)
-
--- | See UVC specifications, Table 2-5 /Format of the Payload Header/
--- for more information.
-data StreamHeaderFlag
-   = FID Parity   -- ^ Frame ID. Toggles between 'Odd' and 'Even' on each frame.
-   | EndOfFrame   -- ^ set on the last payload of a video/image frame
-   | PTS          -- ^ a 'PresentationTimeStamp' is provided.
-   | SCR          -- ^ a 'SourceClockReference' is provided.
-   | StillImage   -- ^ the following data is a still image frame.
-   | ErrorBit     -- ^ error during the transmission, use a Stream Error Code control to get more information.
-   deriving (Eq, Show, Data, Typeable)
-
-instance Serialize (BitMask StreamHeaderFlag) where
-    put = Put.putWord8 ∘ marshalBitmask stream_header_bitmask
-    get = unmarshalBFH `fmap` Get.getWord8
-
-stream_header_bitmask ∷ BitMaskTable StreamHeaderFlag
-stream_header_bitmask =
-    [ (1, EndOfFrame)
-    , (2, PTS)
-    , (3, SCR)
-    -- bit 4 is reserved.
-    , (5, StillImage)
-    , (6, ErrorBit)
-    -- , (7, EndOfHeader) mark the end of the header, reserved for
-    -- future extensions and useless in Haskell.
-    ]
-
-unmarshalBFH ∷ Word8 → BitMask StreamHeaderFlag
-unmarshalBFH w8 =
-    let BitMask xs = unmarshalBitmask stream_header_bitmask w8
-    in if w8 `testBit` 0
-          then BitMask (FID  Odd:xs)
-          else BitMask (FID Even:xs)
-
-parseStreamHeader ∷ Get.Get StreamHeader
-parseStreamHeader = do
-    Get.skip 1 -- skipping bLength
-    bfh@(BitMask xs) ← unmarshalBFH `fmap` Get.getWord8
-    mPTS ← if PTS ∈ xs
-                then Just `fmap` Get.getWord32le
-                else return Nothing
-    mSCR ← if SCR ∈ xs
-                then do x0 ← Get.getWord32le
-                        x1 ← Get.getWord16le
-                        return $ Just (x0, x1)
-                else return Nothing
-
-    return $ StreamHeader bfh mPTS mSCR
-
-instance Serialize StreamHeader where
-    put = (⊥)
-    get = parseStreamHeader
-
--- See UVC specifications 1.0a, Table 2.2.
--- FIXME: do not export ?
-extractStreamHeader ∷ B.ByteString → StreamHeader
-extractStreamHeader bs = runGetExact bs
-
-runGetExact ∷ Serialize a ⇒ B.ByteString → a
-runGetExact bs =
-    case Get.runGet get bs of
-         Right a → a
-         Left s  → error $ "runGetExact: " ⧺ s
-
-{----------------------------------------------------------------------
--- Configuring the video device.
-----------------------------------------------------------------------}
-
--- What the frack is going on ?
--- Well, the System.USB module defines two sort of control requests:
--- the read ones and the write ones.
---
--- controlAction devh RequestType Recipient Request Value Index α
--- readControl   devh RequestType Recipient Request Value Index Size       Timeout → IO (ByteString, Status)
--- writeControl  devh RequestType Recipient Request Value Index ByteString Timeout → IO (Size,       Status)
---
--- But the UVC standard use a GET/SET notation which is redundent with
--- the distinction between readControl and writeControl.
---
--- Can We Simplify The Situation ?
-
-data VideoRequestType
-   = Set
-   | Get
-   deriving (Eq, Show, Enum, Data, Typeable)
-
-data VideoRequest
-   = VideoDummyRequest -- enum start at 0
-   | Current           -- fromEnum ≡ 1
-   | Minimum
-   | Maximum
-   | Resolution
-   | DataLength
-   | Information
-   | Default
-   deriving (Eq, Show, Enum, Data, Typeable)
-
-data ProbeAction
-   = Probe
-   | Commit
-   deriving (Eq, Show, Data, Typeable)
-
--- | See UVC specifications 1.0a, Table 4-45.
-probeCommitGet ∷ VideoDevice -> DeviceHandle -> ProbeAction -> VideoRequest
-               -> IO ProbeCommitControl
-probeCommitGet video devh action attr = do
-    let cs = if action ≡ Probe then VS_PROBE_CONTROL else VS_COMMIT_CONTROL
-        release = vcdUVC ∘ videoCtrlDesc $ video
-
-        bRequest  = 0x80 .|. genFromEnum attr
-        wValue    = cs `shiftL` 8
-        wIndex    = fromIntegral ∘ head ∘ videoStrIfaces $ video
-        wLength   = if (vcdUVC $ videoCtrlDesc video) ≡ (0, 1, 0, 0)
-                       then 26
-                       else 34
-
-        -- FIXME: hardcoded timeout
-        timeout   = 500
-
-    bs ← readControlExact devh Class ToInterface
-                               bRequest wValue wIndex wLength timeout
-
-    case extractPCControl release bs of
-      Nothing → E.throw $ IOException "Could not read the probe control set."
-      Just x  → return x
-
--- | See UVC specifications 1.0a, Table 4-45.
-probeCommitSet ∷ VideoDevice -> DeviceHandle -> ProbeAction -> VideoRequest
-               -> ProbeCommitControl → IO ()
-probeCommitSet video devh action attr ctrl =
-    let cs = if action ≡ Probe then VS_PROBE_CONTROL else VS_COMMIT_CONTROL
-        release = vcdUVC ∘ videoCtrlDesc $ video
-
-        bRequest   = genFromEnum attr
-        wValue     = cs `shiftL` 8
-        wIndex     = fromIntegral ∘ head ∘ videoStrIfaces $ video
-        bytestring = intractPCControl release ctrl
-
-        -- FIXME: hardcoded timeout
-        timeout    = 500
-
-    in writeControlExact devh Class ToInterface
-                         bRequest wValue wIndex bytestring timeout
-
-isFormatUncompressed ∷ VSFormat → Bool
-isFormatUncompressed (FormatUncompressed _ _ _ _ _ _ _ _ _ _ _ _) = True
-isFormatUncompressed _                                            = False
-
--- | Select an uncompressed frame by its index number.
-customProbeCommitControl ∷ VideoDevice → FrameIndex → ProbeCommitControl
-customProbeCommitControl video idx =
-    let format = getFormatUncompressed video
-
-        frame = head ∘ filter (\f → fFrameIndex f ≡ idx)
-              ∘ getFramesUncompressed
-              $ video
-
-    in ProbeCommitControl
-        { pcHint                   = BitMask [HintFrameInterval]
-        , pcFormatIndex            = fFormatIndex format
-        , pcFrameIndex             = fFrameIndex frame
-        , pcFrameInterval          = fDefaultFrameInterval frame
-        -- The following 4 parameters are only valid if the
-        -- corresponding '(ihControls !! formatIndex) inputHeader' is
-        -- enable.
-        , pcKeyFrameRate           = 0
-        , pcPFrameRate             = 0
-        , pcCompQuality            = 0
-        , pcCompWindowSize         = 0
-        -- Parameter read only for the host. Keep your hands off !
-        , pcDelay                  = 0
-        -- Parameter read only for the host. Keep your hands off !
-        , pcMaxVideoFrameSize      = 0
-        -- FIXME: should we use information from the isochronous
-        -- endpoint ?
-        , pcMaxPayloadTransferSize = 0
-        }
-
--- | Select the recommended uncompressed frame.
-defaultProbeCommitControl ∷ VideoDevice → ProbeCommitControl
-defaultProbeCommitControl video =
-    let format = getFormatUncompressed video
-
-        -- Select the frame with the minimum data payload, because I'm
-        -- lazy.
-        frameIndex = fDefaultFrameIndex format
-
-    in customProbeCommitControl video frameIndex
-
--- | Select the frame with the minimum data payload.
-simplestProbeCommitControl ∷ VideoDevice → ProbeCommitControl
-simplestProbeCommitControl video =
-    let frame = minimumBy (compare `on` fMinBitRate)
-              ∘ getFramesUncompressed
-              $ video
-
-    in customProbeCommitControl video (fFrameIndex frame)
-
--- | Get the one (and unique?) uncompressed format video streaming
--- descriptor.
-getFormatUncompressed ∷ VideoDevice → VSFormat
-getFormatUncompressed video =
-    let formats = vsiFormats
-                ∘ head ∘ vsdInterfaces
-                ∘ head ∘ videoStrDescs
-                $ video
-    in case find isFormatUncompressed formats of
-         Nothing → error "No FormatUncompressed descriptor !"
-         Just x  → x
-
--- | Get every uncompressed frames video streaming descriptors.
-getFramesUncompressed ∷ VideoDevice → [VSFrame]
-getFramesUncompressed = fFrames ∘ getFormatUncompressed
-
--- | Set the given 'ProbeCommitControl'. If the device answers with an
--- identical control set, commits it and returns @Right control@, else
--- just returns @Left newControl@.
-tryPCControl ∷ VideoDevice → DeviceHandle → ProbeCommitControl
-             → IO (Either ProbeCommitControl ProbeCommitControl)
-tryPCControl video devh ctrl = do
-    probeCommitSet video devh Probe Current ctrl
-    ctrl' ← probeCommitGet video devh Probe Current
-    if (ctrl' ≠ ctrl)
-       -- Return the modified control.
-       then return $ Left ctrl'
-       -- Commit the provided control and return it.
-       else do probeCommitSet video devh Commit Current ctrl'
-               return $ Right ctrl'
-
--- Ok, so now if your are lucky enough, the probe and commit protocol
--- negociation should look like the following:
---
--- λ> video
--- VideoDevice "USB Camera" on {Bus 002 Device 002: ID 13d3:5130}
---  +-- controlIface = 0
---  +-- streamIfaces = [1]
---
--- λ> probeCommitSet video devh Probe Current (simplestProbeCommitControl video)
--- DEBUG: writeControlAsync 0x21 0x01 0x0100 0x0001 0x001a
--- (26,Completed)
---
--- λ> probeCommitGet video devh Probe Current
--- DEBUG: readControlAsync 0xa1 0x81 0x0100 0x0001 0x001a
--- Just (ProbeCommitControl {pcHint = [HintFrameInterval], pcFormatIndex = 1, pcFrameIndex = 5, pcFrameInterval = 333333, pcKeyFrameRate = 0, pcPFrameRate = 0, pcCompQuality = 0, pcCompWindowSize = 0, pcDelay = 8671, pcMaxVideoFrameSize = 38400, pcMaxPayloadTransferSize = 1600})
---
--- λ> Just control <- probeCommitGet video devh Probe Current
--- DEBUG: readControlAsync 0xa1 0x81 0x0100 0x0001 0x001a
---
--- λ> control
--- ProbeCommitControl {pcHint = [HintFrameInterval], pcFormatIndex = 1, pcFrameIndex = 5, pcFrameInterval = 333333, pcKeyFrameRate = 0, pcPFrameRate = 0, pcCompQuality = 0, pcCompWindowSize = 0, pcDelay = 8671, pcMaxVideoFrameSize = 38400, pcMaxPayloadTransferSize = 1600}
---
--- λ> probeCommitSet video devh Probe Current control
--- DEBUG: writeControlAsync 0x21 0x01 0x0100 0x0001 0x001a
--- (26,Completed)
-
--- | This function will try to simply negotiate the format, frame, video
--- characteristics and USB bandwith used in future asynchronous
--- communication.
---
--- See UVC specifications 1.0a, Section 4.3.1.1
--- /Video Prove and Commit Control/ for more information.
-negotiatePCControl ∷ VideoDevice → DeviceHandle → ProbeCommitControl
-                   → IO ProbeCommitControl
-negotiatePCControl video devh ctrl0 = do
-    -- Try with our default control.
-    result ← tryPCControl video devh ctrl0
-
-    -- The device should have replied with a modified control set.
-    case result of
-         Right ctrl0' → return ctrl0' -- should not work, but who knows.
-         Left ctrl1 → do
-             -- Using the new device provided control set.
-             result' ← tryPCControl video devh ctrl1
-             case result' of
-                  Right _ → return ctrl1
-                  Left  _ → error "Could not use default probe control."
-
-
--- FIXME: See page 75.
--- queryAvailableControls = undefined
--- videoRequestGetInfo =
-
-{----------------------------------------------------------------------
--- Probe and Commit Control.
-----------------------------------------------------------------------}
-
--- See UVC specifications 1.0a, Section 4.3.1.1 and Table 4-46.
-
-data ProbeCommitControl = ProbeCommitControl
-    { pcHint                   ∷ !(BitMask ProbeHint)
-    , pcFormatIndex            ∷ !FormatIndex
-    , pcFrameIndex             ∷ !FrameIndex
-    , pcFrameInterval          ∷ !FrameInterval
-    , pcKeyFrameRate           ∷ !Word16
-    , pcPFrameRate             ∷ !Word16
-    , pcCompQuality            ∷ !Word16
-    , pcCompWindowSize         ∷ !Word16
-    , pcDelay                  ∷ !Word16
-    , pcMaxVideoFrameSize      ∷ !Int
-    , pcMaxPayloadTransferSize ∷ !Int
-    } deriving (Eq, Show, Data, Typeable)
-
-data ProbeHint
-   = HintFrameInterval
-   | HintKeyFrameRate
-   | HintPFrameRate
-   | HintCompQuality
-   | HintCompWindowSize
-   deriving (Eq, Show, Data, Typeable)
-
-probe_hint_bitmask ∷ [(Int, ProbeHint)]
-probe_hint_bitmask =
-   [ (0,  HintFrameInterval)
-   , (1,  HintKeyFrameRate)
-   , (2,  HintPFrameRate)
-   , (3,  HintCompQuality)
-   , (4,  HintCompWindowSize)
-   ]
-
-unmarshalProbeHint ∷ Bits α ⇒ α → BitMask ProbeHint
-unmarshalProbeHint = unmarshalBitmask probe_hint_bitmask
-
-marshalProbeHint ∷ BitMask ProbeHint → Word16
-marshalProbeHint = marshalBitmask probe_hint_bitmask
-
-extractPCControl ∷ ReleaseNumber → B.ByteString → Maybe ProbeCommitControl
-extractPCControl release bs =
-    case Get.runGet (parseVideoProbeCommitControl release) bs of
-         Left _  → Nothing
-         Right x → Just x
-
--- What ? "intract" is not an english word ? but who cares !
-intractPCControl ∷ ReleaseNumber → ProbeCommitControl → B.ByteString
-intractPCControl release ctrl =
-    Put.runPut $ unparseVideoProbeCommitControl release ctrl
-
-unparseVideoProbeCommitControl ∷ ReleaseNumber → ProbeCommitControl → Put.Put
-unparseVideoProbeCommitControl release value = do
-    let bmHint                   = marshalProbeHint $ pcHint value
-        bFormatIndex             = pcFormatIndex value
-        bFrameIndex              = pcFrameIndex value
-        dwFrameInterval          = pcFrameInterval value
-        wKeyFrameRate            = pcKeyFrameRate value
-        wPFrameRate              = pcPFrameRate value
-        wCompQuality             = pcCompQuality value
-        wCompWindowSize          = pcCompWindowSize value
-        wDelay                   = pcDelay value
-        dwMaxVideoFrameSize      = fromIntegral $ pcMaxVideoFrameSize value
-        dwMaxPayloadTransferSize = fromIntegral $ pcMaxPayloadTransferSize value
-
-    Put.putWord16le bmHint
-    Put.putWord8    bFormatIndex
-    Put.putWord8    bFrameIndex
-    Put.putWord32le dwFrameInterval
-    Put.putWord16le wKeyFrameRate
-    Put.putWord16le wPFrameRate
-    Put.putWord16le wCompQuality
-    Put.putWord16le wCompWindowSize
-    Put.putWord16le wDelay
-    Put.putWord32le dwMaxVideoFrameSize
-    Put.putWord32le dwMaxPayloadTransferSize
-
-    when (release ≠ (0, 1, 0, 0)) $
-        -- Pad the extra bits use in UVC version 1.1.
-        replicateM_ (34 - 26) (Put.putWord8 0)
-
--- There are huge changes between version 1.0a and 1.1 of the UVC specs,
--- so we need the UVC release number reported by the device to cope with
--- it.
--- FIXME: handle UVC specs 1.1.
-parseVideoProbeCommitControl ∷ ReleaseNumber → Get.Get ProbeCommitControl
-parseVideoProbeCommitControl _ = do
-    bmHint ← unmarshalProbeHint `fmap` Get.getWord16le
-    bFormatIndex ← Get.getWord8
-    bFrameIndex ← Get.getWord8
-    dwFrameInterval ← Get.getWord32le
-    wKeyFrameRate ← Get.getWord16le
-    wPFrameRate ← Get.getWord16le
-    wCompQuality ← Get.getWord16le
-    wCompWindowSize ← Get.getWord16le
-    wDelay ← Get.getWord16le
-    dwMaxVideoFrameSize ← fromIntegral `fmap` Get.getWord32le
-    dwMaxPayloadTransferSize ← fromIntegral `fmap` Get.getWord32le
-
-    return $ ProbeCommitControl
-           { pcHint                   = bmHint
-           , pcFormatIndex            = bFormatIndex
-           , pcFrameIndex             = bFrameIndex
-           , pcFrameInterval          = dwFrameInterval
-           , pcKeyFrameRate           = wKeyFrameRate
-           , pcPFrameRate             = wPFrameRate
-           , pcCompQuality            = wCompQuality
-           , pcCompWindowSize         = wCompWindowSize
-           , pcDelay                  = wDelay
-           , pcMaxVideoFrameSize      = dwMaxVideoFrameSize
-           , pcMaxPayloadTransferSize = dwMaxPayloadTransferSize
-           }
-
-
-
-{----------------------------------------------------------------------
--- VideoDevice Handling.
-----------------------------------------------------------------------}
-
-unsafeOpenVideoDevice ∷ VideoDevice → IO DeviceHandle
-unsafeOpenVideoDevice v = do
-    devh ← openDevice device
-
-    printf "Acquiring interface number %s\n" (show ctrl)
-    ignoreNotFound $ detachKernelDriver devh ctrl
-    claimInterface devh ctrl
-
-    printf "Acquiring interface number %s\n" (show stream0)
-    ignoreNotFound $ detachKernelDriver devh stream0
-    claimInterface devh stream0
-
-    return devh
-
-  where
-    device  = videoDevice v
-    ctrl    = videoCtrlIface v
-    stream0 = head ∘ videoStrIfaces $ v
-
-unsafeCloseVideoDevice ∷ VideoDevice → DeviceHandle → IO ()
-unsafeCloseVideoDevice v devh = do
-    releaseInterface devh ctrl0
-    ignoreNotFound $ attachKernelDriver devh ctrl0
-
-    releaseInterface devh stream0
-    ignoreNotFound $ attachKernelDriver devh stream0
-
-    closeDevice devh
-
-  where
-    ctrl0   = videoCtrlIface v
-    stream0 = head ∘ videoStrIfaces $ v
-
-withVideoDeviceHandle ∷ VideoDevice → (DeviceHandle → IO α) → IO α
-withVideoDeviceHandle v io =
-    withDeviceHandle device $ \devh →
-    withDetachedKernelDriver devh ctrl0 $
-    withClaimedInterface devh ctrl0 $
-    withDetachedKernelDriver devh stream0 $
-    withClaimedInterface devh stream0 $
-    io devh
-  where
-    device  = videoDevice v
-    ctrl0   = videoCtrlIface v
-    stream0 = head ∘ videoStrIfaces $ v
-
--- We ignore NotFoundException throwed by attach/detachKernalDriver when
--- no driver can be found.
-ignoreNotFound ∷ IO () → IO ()
-ignoreNotFound io = E.catch io handle
-  where handle e = case e of
-            NotFoundException → return ()
-            _                 → E.throw e
-
-{----------------------------------------------------------------------
--- Searching for a video device.
--- TODO: handle configurations.
--- Does a USB device really provide multiple configurations ?
-----------------------------------------------------------------------}
-
--- Check if a device implements an UVC interface:
--- ⋅ scan every device available
--- ⋅ for every device, scan their configurations
--- ⋅ for every configuration, scan their interfaces
--- ⋅ for every interface, check that interfaceClass ≡ Video
-getVideoInterfaces ∷ Device → [Interface]
-getVideoInterfaces dev =
-    -- invoking []'s supernatural monad power.
-    let ifaces = [deviceDesc dev]
-              ≫= deviceConfigs
-              ≫= configInterfaces
-        isVIf  = \(alt0:_) → interfaceClass alt0 ≡ videoClass
-    in filter isVIf ifaces
-  where
-    videoClass = CC_VIDEO
-
--- | Check if an USB device has an USB video function interface.
-hasVideoInterface ∷ Device → Bool
-hasVideoInterface = not ∘ null ∘ getVideoInterfaces
-
-{----------------------------------------------------------------------
 -- The VideoDevice Object and its interface association.
 ----------------------------------------------------------------------}
 
@@ -1211,6 +176,7 @@ isExtensionUnit ∷ ComponentDesc → Bool
 isExtensionUnit (ExtensionUnitDesc _ _ _ _ _) = True
 isExtensionUnit _                             = False
 
+-- | Using a pretty-printer when display a video device.
 instance Show VideoDevice where
     show video = printf "VideoDevice \"%s\" on {%s} \n\\
                         \%s\\
@@ -1371,7 +337,8 @@ getVideoDevice dev = do
                 -- control AND streaming interfaces. So for streaming
                 -- interfaces, the range is …
                 range    = [bFirstInterface + 1 .. bInterfaceCount - 1]
-                isStream = \(alt0:_) → interfaceNumber alt0 ∈ range
+                isStream = \iface → let alt0 = head iface
+                                    in interfaceNumber alt0 ∈ range
                 streams  = filter isStream ifaces
                 streamDs = map extractVideoStreamDesc streams
 
@@ -1408,6 +375,49 @@ getVideoDevice dev = do
          ∧ bFunctionClass    ≡ CC_VIDEO
          ∧ bFunctionSubClass ≡ SC_VIDEO_INTERFACE_COLLECTION
          ∧ bFunctionProtocol ≡ PC_PROTOCOL_UNDEFINED
+
+-- | Get the one (and unique?) uncompressed format video streaming
+-- descriptor.
+getFormatUncompressed ∷ VideoDevice → VSFormat
+getFormatUncompressed video =
+    let formats = vsiFormats
+                ∘ head ∘ vsdInterfaces
+                ∘ head ∘ videoStrDescs
+                $ video
+    in case find isFormatUncompressed formats of
+         Nothing → error "No FormatUncompressed descriptor !"
+         Just x  → x
+
+-- | Get every uncompressed frames video streaming descriptors.
+getFramesUncompressed ∷ VideoDevice → [VSFrame]
+getFramesUncompressed = fFrames ∘ getFormatUncompressed
+
+{----------------------------------------------------------------------
+-- Searching for a video device.
+-- TODO: handle configurations.
+-- Does a USB device really provide multiple configurations ?
+----------------------------------------------------------------------}
+
+-- Check if a device implements an UVC interface:
+-- ⋅ scan every device available
+-- ⋅ for every device, scan their configurations
+-- ⋅ for every configuration, scan their interfaces
+-- ⋅ for every interface, check that interfaceClass ≡ Video
+getVideoInterfaces ∷ Device → [Interface]
+getVideoInterfaces dev =
+    -- invoking []'s supernatural monad power.
+    let ifaces = [deviceDesc dev]
+              ≫= deviceConfigs
+              ≫= configInterfaces
+        isVIf  = \iface → let alt0 = head iface
+                          in interfaceClass alt0 ≡ videoClass
+    in filter isVIf ifaces
+  where
+    videoClass = CC_VIDEO
+
+-- | Check if an USB device has an USB video function interface.
+hasVideoInterface ∷ Device → Bool
+hasVideoInterface = not ∘ null ∘ getVideoInterfaces
 
 {----------------------------------------------------------------------
 -- Prelude to binary(-strict) parsing.
@@ -1559,7 +569,7 @@ data CameraControl
    | CameraFocusAuto
    deriving (Eq, Show, Data, Typeable)
 
-camera_control_bitmask ∷ [(Int, CameraControl)]
+camera_control_bitmask ∷ BitMaskTable CameraControl
 camera_control_bitmask =
    [ (0,  CameraScanningMode)
    , (1,  CameraAutoExposureMode)
@@ -1603,7 +613,7 @@ data ProcessingControl
    | ControlAnalogVideoLockStatus
    deriving (Eq, Show, Data, Typeable)
 
-processing_control_bitmask ∷ [(Int, ProcessingControl)]
+processing_control_bitmask ∷ BitMaskTable ProcessingControl
 processing_control_bitmask =
     [ (0,  ControlBrightness)
     , (1,  ControlContrast)
@@ -1637,7 +647,7 @@ data VideoStandard
    | VideoPAL_525_60
    deriving (Eq, Show, Data, Typeable)
 
-video_standards_bitmask ∷ [(Int, VideoStandard)]
+video_standards_bitmask ∷ BitMaskTable VideoStandard
 video_standards_bitmask =
     [ (0, VideoNone)
     , (1, VideoNTSC_525_60)
@@ -1916,6 +926,10 @@ data VSFrame
            }
    deriving (Eq, Show, Data, Typeable)
 
+isFormatUncompressed ∷ VSFormat → Bool
+isFormatUncompressed (FormatUncompressed _ _ _ _ _ _ _ _ _ _ _ _) = True
+isFormatUncompressed _                                            = False
+
 data StillImageFrame
    = StillImageFrame
            { siEndpointAddress         ∷ !EndpointAddress
@@ -1945,7 +959,7 @@ data VSCapability
    = DynamicFormatChangeSupported
    deriving (Eq, Show, Data, Typeable)
 
-vs_capability_bitmask ∷ [(Int, VSCapability)]
+vs_capability_bitmask ∷ BitMaskTable VSCapability
 vs_capability_bitmask =
    [ (0,  DynamicFormatChangeSupported)
    ]
@@ -1974,7 +988,7 @@ data VSControl
    | UpdateFrameSegment
    deriving (Eq, Show, Data, Typeable)
 
-vs_control_bitmask ∷ [(Int, VSControl)]
+vs_control_bitmask ∷ BitMaskTable VSControl
 vs_control_bitmask =
     [ (0, Keyframerate)
     , (1, PFramerate)

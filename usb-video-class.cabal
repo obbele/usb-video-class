@@ -21,19 +21,29 @@ description:   A small demo to showcase asynchronous transfers.
                * The USB Video Class v1.1 specification:
                  <http://www.usb.org/developers/devclass_docs/USB_Video_Class_1_1.zip>
 
+extra-source-files: README.mkd
+extra-source-files: include/uvc.h
+
 source-repository head
   Type:     git
   Location: git://github.com/obbele/usb-video-class.git
+
+Flag Test
+  description: Build the test program but not the library
+  default:     True
 
 Flag BMP
   description: Build the BMP test program
   default:     False
 
-executable test
+library
   GHC-Options: -Wall
   GHC-Options: -fno-warn-unused-do-bind
-  GHC-Options: -threaded
-  GHC-Options: -rtsopts
+
+  if !flag(test)
+      Buildable: True
+  else
+      Buildable: False
 
   build-depends: base                 >= 4     && < 4.4
                , base-unicode-symbols >= 0.1.1 && < 0.3
@@ -42,11 +52,38 @@ executable test
                , usb                  >= 1.0
                , cereal               >= 0.3
 
+  exposed-modules: System.USB.UVC.Descriptors
+                 , System.USB.UVC.DeviceHandling
+                 , System.USB.UVC.Requests
+                 , System.USB.UVC.Streaming
+                 , System.USB.UVC
+
+  other-modules: Utils
+               , ExtraUtils
+
+  include-dirs: include
+
+executable test
+  GHC-Options: -Wall
+  GHC-Options: -fno-warn-unused-do-bind
+  GHC-Options: -threaded
+  GHC-Options: -rtsopts
+
+  if flag(test)
+      Buildable: True
+  else
+      Buildable: False
+
   main-is:       Main.hs
-  other-modules: System.USB.UVC.Internals
+  other-modules: System.USB.UVC.Descriptors
+               , System.USB.UVC.DeviceHandling
+               , System.USB.UVC.Requests
+               , System.USB.UVC.Streaming
+               , System.USB.UVC
                , Utils
                , ExtraUtils
 
+  include-dirs: include
 
 executable test_bmp
   GHC-Options: -Wall
@@ -62,7 +99,13 @@ executable test_bmp
       Buildable: False
 
   main-is:       BMP.hs
-  other-modules: System.USB.UVC.Internals
+  other-modules: System.USB.UVC.Descriptors
+               , System.USB.UVC.DeviceHandling
+               , System.USB.UVC.Requests
+               , System.USB.UVC.Streaming
+               , System.USB.UVC
                , Utils
                , ExtraUtils
                , Codec.UVC.RGBA
+
+  include-dirs: include

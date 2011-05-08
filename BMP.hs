@@ -6,7 +6,7 @@ module Main where
 import qualified Data.ByteString   as B
 
 import System.USB
-import System.USB.UVC.Internals
+import System.USB.UVC
 import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
 
 import Codec.BMP                ( BMP, packRGBA32ToBMP, writeBMP )
