@@ -2,8 +2,9 @@ This is a proof-of-concept program. It shows how to use libusb and
 Haskell to write a simple video driver based on the USB Video Class
 specifications (aka UVC).
 
-This example is based on the old version 1.0a of the specs. Devices
-implementing the new version 1.1 might worked, but none was test so far.
+This example is mainly based on the old version 1.0a of the specs.
+Devices implementing the new version 1.1 might worked, but none was test
+so far.
 
 How to test (at your own risks)
 ===============================
@@ -11,19 +12,25 @@ How to test (at your own risks)
 Check that you have the right permission on your video USB device file
 handler in /dev/bus/usb/\*/\*.
 
-Run `./images.sh` to retrieve a bunch of BMP images and display them
-(with feh).
+Run `./test_images.sh` to retrieve a bunch of BMP images and display
+them (with feh).
 
-Run `./video.sh` to retrieve store raw YUY2 video stream to disk and
-display it with ffplay (a tool from FFMPEG).
+Run `./test_video.sh` to retrieve store raw YUY2 video stream to disk
+and display it with gst-launch or ffplay (tools from gstreamer-tools or
+FFMPEG).
+
+You can also directly run `./dist/build/test/test (--help)` to try with
+different video frames. The resulting raw video file (typically
+/tmp/uvc\_x\_y.yuy2 should be readable with the `read_video.sh` helper
+script).
 
 Status
 ======
 
 1. UVC Video Control and Video Streaming descriptors are correctly parsed.
 
-2. Video probe and commit controls seem to work. The device answers to
-   the requests and accepts the control commit.
+2. Video probe and commit controls seem to work. Even if the negotiation
+   scheme is very limited.
 
 3. Video streams can be retrieved and raw data is readily accessible.
    Two modules `Codec.UVC.RGBA` and `BMP` allow export to bmp files.
@@ -31,18 +38,23 @@ Status
 What is not working ?
 ---------------------
 
-Background threads reading isochronous requests may emit exception and
+Background threads reading isochronous requests may emit exceptions and
 deadlock the whole program.
 
-High-resolution frames (1280x800) causes error while parsing the frame
-stream headers.
+Real stream interface, as a lazy-build list, a Concurrent.Chan or an
+iterator.
 
 What could be improved ?
 ------------------------
 
-The system load is to high when processing (!not retrieving) video raw
-data. Improvement to the stream header parsing, frames re-ordering and
-RGBA conversion would be welcome.
+The system load is to high when processing (!= not retrieving) video raw
+data. Improvement to the RGBA conversion would be welcome.
+
+Perhaps, a source of optimisation would be to tweak isopackets memory
+allocation as in a regular C program. In C one usualy allocates a small
+set of isopackets (6 \* 64 packets) and submit them again and again
+where this Haskell implemention allocates new isopackets for every
+submission.
 
 A binding to gstreamer/xine/ffmpeg/whatever to directly display the
 video.
