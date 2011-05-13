@@ -56,8 +56,7 @@ import System.IO                  ( stdout, hSetBuffering, BufferMode(..) )
 
 import Control.Monad.Unicode      ( (≫) )
 import Data.List.Unicode          ( (⧺) )
-import Prelude.Unicode            ( (⊥), (∧), (≡), (≤), (≥)
-                                  , (⋅), (∘), (∈) )
+import Prelude.Unicode            ( (⊥), (∧), (≡), (≤), (≥), (∘), (∈) )
 
 {----------------------------------------------------------------------
 -- Video Data retrieving.
@@ -276,7 +275,9 @@ findIsochronousAltSettings iface epaddr xferSize =
 
     -- Compute the endpoint transfer size for every alt-settings.
     getSize ∷ InterfaceDesc → Int
-    getSize = epSize ∘ head ∘ filter isOurEndpoint ∘ interfaceEndpoints
+    getSize = maxIsoPacketSize
+            ∘ head ∘ filter isOurEndpoint
+            ∘ interfaceEndpoints
 
     -- Select an alternate setting having the desired endpoint.
     getAlt ∷ Interface → [InterfaceDesc]
@@ -284,11 +285,6 @@ findIsochronousAltSettings iface epaddr xferSize =
 
     -- Predicate on our endpoint address.
     isOurEndpoint = \ep → endpointAddress ep ≡ epaddr
-
-    -- MaxPacketSize of an isochronous endpoint ≡ packet_size ⋅ x
-    -- where x is the number of packets, i.e opportunity + 1.
-    epSize ep = let MaxPacketSize x y = endpointMaxPacketSize ep
-                in x ⋅ (1 + fromEnum y)
 
 -- | Convert from units of 100 ns to 'threadDelay' microseconds.
 waitFrameInterval ∷ FrameInterval → IO ()
