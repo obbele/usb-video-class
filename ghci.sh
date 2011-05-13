@@ -1,3 +1,3 @@
 #!/bin/sh -e
 
-ghci -idist/build Main.hs
+ghci -Iinclude -idist/build Main.hs
