@@ -15,14 +15,14 @@ handler in /dev/bus/usb/\*/\*.
 Run `./test_images.sh` to retrieve a bunch of BMP images and display
 them (with feh).
 
-Run `./test_video.sh` to retrieve store raw YUY2 video stream to disk
-and display it with gst-launch or ffplay (tools from gstreamer-tools or
-FFMPEG).
+Run `./test_video.sh` to store on the disk and display with gst-launch
+or ffplay (tools from gstreamer-tools or FFMPEG) a raw YUY2 video
+stream.
 
 You can also directly run `./dist/build/test/test (--help)` to try with
 different video frames. The resulting raw video file (typically
-/tmp/uvc\_x\_y.yuy2 should be readable with the `read_video.sh` helper
-script).
+`/tmp/uvc\_x\_y.yuy2`) should be readable with the `read_video.sh`
+helper script.
 
 Status
 ======
