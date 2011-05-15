@@ -1,6 +1,10 @@
 {-# LANGUAGE UnicodeSyntax #-} -- providing: ∷ ⇒ ∀ → ← ⤙ ⤚ ⤛ ⤜
 
-module Main where
+-- | Common functions used in the various test programs (command-line
+-- client in Main, bmp generator in BMP, iteratee-test in Iteratee,
+-- etc.).
+
+module Demo.Common where
 
 import qualified Control.Exception as E
 import qualified Data.ByteString   as B
@@ -9,43 +13,16 @@ import System.USB
 import System.USB.UVC
 
 import Control.Monad
-import Data.List                ( find )
-import Text.Printf              ( printf )
-import System.Environment       ( getArgs )
+import Data.List             ( find )
+import Text.Printf           ( printf )
 
-import Control.Monad.Unicode    ( (≫=) )
-import Data.List.Unicode        ( (⧺) )
-import Prelude.Unicode          ( (∧), (≡), (∘) )
+import Control.Monad.Unicode ( (≫=) )
+import Data.List.Unicode     ( (⧺) )
+import Prelude.Unicode       ( (∧), (≡), (∘) )
 
 {----------------------------------------------------------------------
 -- USB operations.
 ----------------------------------------------------------------------}
-
--- | Parse command line arguments.
---
--- * if @saveraw@ is given, run 'writeRawDataToDisk';
---
--- * if @inspect@ is given, run 'inspectData';
---
--- * otherwise, run 'testVideoStream';
---
-main ∷ IO ()
-main = do
-    let usage = "Usage: test [options]\n\
-                \\t-h|--help) display this help\n\
-                \\tsaveraw)   get default video stream and save to disk\n\
-                \\tinspect)   get default video stream and display headers\n\
-                \\t[default]  prompt for configuration and save to disk\n"
-
-    args ← getArgs
-    let action = case args of
-         ("-h":_)      → putStr usage
-         ("--help":_)  → putStr usage
-         ("saveraw":_) → writeRawDataToDisk
-         ("inspect":_) → inspectData
-         _             → testVideoStream
-
-    catchCommonUSBException action
 
 -- | Write raw YUY2\/NV12 content to a file @\/tmp\/uvc_WxH.yuy2@ where
 -- @W@ is the width and @H@ the height.

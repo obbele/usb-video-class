@@ -28,8 +28,12 @@ source-repository head
   Type:     git
   Location: git://github.com/obbele/usb-video-class.git
 
+Flag Library
+  description: Build the library (experimental option)
+  default:     False
+
 Flag Test
-  description: Build the test program but not the library
+  description: Build the test program
   default:     True
 
 Flag BMP
@@ -40,7 +44,7 @@ library
   GHC-Options: -Wall
   GHC-Options: -fno-warn-unused-do-bind
 
-  if !flag(test)
+  if flag(Library)
       Buildable: True
   else
       Buildable: False
@@ -58,9 +62,9 @@ library
                  , System.USB.UVC.Streaming
                  , System.USB.UVC
 
-  other-modules: Utils
+  other-modules: System.USB.UVC.Unsafe
                , ExtraUtils
-               , System.USB.UVC.Unsafe
+               , Utils
 
   include-dirs: include
 
@@ -70,20 +74,21 @@ executable test
   GHC-Options: -threaded
   GHC-Options: -rtsopts
 
-  if flag(test)
+  if flag(Test)
       Buildable: True
   else
       Buildable: False
 
-  main-is:       Main.hs
+  main-is:       Demo/Main.hs
   other-modules: System.USB.UVC.Descriptors
                , System.USB.UVC.DeviceHandling
                , System.USB.UVC.Requests
                , System.USB.UVC.Streaming
                , System.USB.UVC
-               , Utils
-               , ExtraUtils
                , System.USB.UVC.Unsafe
+               , ExtraUtils
+               , Utils
+               , Demo.Common
 
   include-dirs: include
 
@@ -100,15 +105,16 @@ executable bmp
   else
       Buildable: False
 
-  main-is:       BMP.hs
+  main-is:       Demo/BMP.hs
   other-modules: System.USB.UVC.Descriptors
                , System.USB.UVC.DeviceHandling
                , System.USB.UVC.Requests
                , System.USB.UVC.Streaming
                , System.USB.UVC
-               , Utils
-               , ExtraUtils
                , System.USB.UVC.Unsafe
                , Codec.UVC.RGBA
+               , ExtraUtils
+               , Utils
+               , Demo.Common
 
   include-dirs: include

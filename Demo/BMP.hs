@@ -5,17 +5,16 @@ module Main where
 
 import qualified Data.ByteString   as B
 
-import System.USB
+import Demo.Common
 import System.USB.UVC
-import Codec.UVC.RGBA           ( nv12ToRGBA, yuy2ToRGBA )
+import Codec.UVC.RGBA        ( nv12ToRGBA, yuy2ToRGBA )
+import Codec.BMP             ( BMP, packRGBA32ToBMP, writeBMP )
 
-import Codec.BMP                ( BMP, packRGBA32ToBMP, writeBMP )
+import System.USB
 
-import Data.List                ( find )
-import Text.Printf              ( printf )
-import Control.Monad.Unicode    ( (≫=) )
-import Data.List.Unicode        ( (⧺) )
-import Prelude.Unicode          ( (∘) )
+import Text.Printf           ( printf )
+import Control.Monad.Unicode ( (≫=) )
+import Prelude.Unicode       ( (∘) )
 
 main ∷ IO ()
 main = writeBMPImages
@@ -45,13 +44,6 @@ writeBMPImages = findVideoDevice ≫= \video →
         printf "writing file [%s]\n" filename
         writeBMP filename x
         foo (i+1) xs
-
-findVideoDevice ∷ IO VideoDevice
-findVideoDevice = newCtx ≫= getDevices ≫= \devices →
-    case find hasVideoInterface devices of
-         Nothing → error "Video device not found !"
-         Just d  → do putStrLn $ "Using VideoDevice := " ⧺ show d
-                      return $ videoDescription d
 
 -- | Convert a raw RGBA frame of dimension @Width@x@Height@ to an RGBA
 -- 'BMP' image.
