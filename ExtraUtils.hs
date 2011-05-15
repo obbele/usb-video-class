@@ -1,9 +1,6 @@
 {-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE DeriveDataTypeable #-}
-{-# LANGUAGE FlexibleInstances #-}
 
--- | Provide miscellaneous utilities, including data abstraction
--- ('BitMask') and handy functions.
+-- | Provide miscellaneous utilities.
 
 module ExtraUtils where
 
@@ -13,36 +10,8 @@ import System.USB            ( Device, deviceDesc
                              , DeviceHandle, withDeviceHandle
                              , StrIx, getStrDesc, deviceProductStrIx )
 
-import Data.Data             ( Data )
-import Data.Typeable         ( Typeable )
-import Data.Bits             ( Bits, testBit, setBit )
-import Data.List             ( find )
-
 import Control.Monad.Unicode ( (≫=) )
-import Prelude.Unicode       ( (≡), (∘) )
-
--- | A type to help creating 'Serialize' instance of binary objects
--- containing flags.
-newtype BitMask a   = BitMask { unBitMask ∷ [a] }
-    deriving (Eq, Data, Typeable)
-
-instance Show a ⇒ Show (BitMask a) where
-    show (BitMask a) = show a
-
--- | An association list mapping bit position (from 0 to n-1) to their
--- equivalent Haskell representation.
-type BitMaskTable a = [(Int, a)]
-
-unmarshalBitmask ∷ Bits α ⇒ BitMaskTable a → α → BitMask a
-unmarshalBitmask table value = BitMask $ foldr test [] table
-  where test (i, ctrl) acc | value `testBit` i = (ctrl:acc)
-                           | otherwise         = acc
-
-marshalBitmask ∷ (Eq a, Bits α) ⇒ BitMaskTable a → BitMask a → α
-marshalBitmask table (BitMask xs) = foldr test 0 xs
-  where test ctrl acc = case find (\(_,a) → a ≡ ctrl) table of
-               Just (i,_) → acc `setBit` i
-               _          → acc
+import Prelude.Unicode       ( (∘) )
 
 -- | Retrieve a string descriptor (in US_english) from a device.
 -- May throw 'USBException's.

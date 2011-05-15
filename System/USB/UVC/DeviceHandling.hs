@@ -1,6 +1,5 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE CPP #-}
 
 -- | Opening and closing a video device.
 
@@ -15,7 +14,6 @@ module System.USB.UVC.DeviceHandling
 import qualified Control.Exception as E
 
 -- Private libraries.
-#include <uvc.h>
 import System.USB.UVC.Descriptors
 
 -- Third parties.

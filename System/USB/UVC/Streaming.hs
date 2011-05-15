@@ -1,7 +1,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE UnicodeSyntax #-}
-{-# LANGUAGE CPP #-}
 
 module System.USB.UVC.Streaming
     (
@@ -29,11 +28,9 @@ import qualified Data.Serialize.Get as Get
 import qualified Data.Serialize.Put as Put
 
 -- Private libraries.
-#include <uvc.h>
 import System.USB.UVC.Requests
 import System.USB.UVC.Descriptors
-import ExtraUtils                 ( unmarshalBitmask, marshalBitmask
-                                  , BitMask(..), BitMaskTable )
+import System.USB.UVC.Unsafe      ( unmarshalBitmask, marshalBitmask )
 
 -- Third parties.
 import System.USB
@@ -77,9 +74,9 @@ data Pipe = Pipe
     } deriving (Eq, Data, Typeable)
 
 instance Show Pipe where
-    show x = printf "Pipe { vpFormat = %s, \\
-                    \vpColors = %s, \\
-                    \vpWidth = %d, vpHeight = %d, \\
+    show x = printf "Pipe { vpFormat = %s, \
+                    \vpColors = %s, \
+                    \vpWidth = %d, vpHeight = %d, \
                     \vpFrames = [%d frames] }"
                     (show $ vpFormat x)
                     (show $ vpColors x)
@@ -352,7 +349,7 @@ reorderFrames w h bs =
 
       where
         payload       = removeStreamHeader x
-        StreamHeader (BitMask flags) _ _ = extractStreamHeader x
+        StreamHeader (Bitmask flags) _ _ = extractStreamHeader x
         endOfFrame    = EndOfFrame ∈ flags
         parity        = if FID Odd ∈ flags then Odd else Even
         makeFrame     = B.concat ∘ reverse
@@ -383,7 +380,7 @@ removeStreamHeader bs = B.drop l bs
 
 isEndOfFrame ∷ B.ByteString → Bool
 isEndOfFrame bs =
-    let StreamHeader (BitMask xs) _ _ = extractStreamHeader bs
+    let StreamHeader (Bitmask xs) _ _ = extractStreamHeader bs
     in EndOfFrame ∈ xs
 
 {----------------------------------------------------------------------
@@ -406,7 +403,7 @@ type PresentationTimeStamp = Word32
 -- | Each isopacket payload comes with a header.
 -- See UVC specifications, section 2.4.3.3 /Video and Still Image Payload Headers/
 -- for more information.
-data StreamHeader = StreamHeader !(BitMask StreamHeaderFlag)
+data StreamHeader = StreamHeader !(Bitmask StreamHeaderFlag)
                                  !(Maybe PresentationTimeStamp)
                                  !(Maybe SourceClockReference)
     deriving (Eq, Show, Data, Typeable)
@@ -427,11 +424,11 @@ data StreamHeaderFlag
    | ErrorBit     -- ^ error during the transmission, use a Stream Error Code control to get more information.
    deriving (Eq, Show, Data, Typeable)
 
-instance Serialize (BitMask StreamHeaderFlag) where
+instance Serialize (Bitmask StreamHeaderFlag) where
     put = Put.putWord8 ∘ marshalBitmask stream_header_bitmask
     get = unmarshalBFH `fmap` Get.getWord8
 
-stream_header_bitmask ∷ BitMaskTable StreamHeaderFlag
+stream_header_bitmask ∷ BitmaskTable StreamHeaderFlag
 stream_header_bitmask =
     [ (1, EndOfFrame)
     , (2, PTS)
@@ -443,17 +440,17 @@ stream_header_bitmask =
     -- future extensions and useless in Haskell.
     ]
 
-unmarshalBFH ∷ Word8 → BitMask StreamHeaderFlag
+unmarshalBFH ∷ Word8 → Bitmask StreamHeaderFlag
 unmarshalBFH w8 =
-    let BitMask xs = unmarshalBitmask stream_header_bitmask w8
+    let Bitmask xs = unmarshalBitmask stream_header_bitmask w8
     in if w8 `testBit` 0
-          then BitMask (FID  Odd:xs)
-          else BitMask (FID Even:xs)
+          then Bitmask (FID  Odd:xs)
+          else Bitmask (FID Even:xs)
 
 parseStreamHeader ∷ Get.Get StreamHeader
 parseStreamHeader = do
     Get.skip 1 -- skipping bLength
-    bfh@(BitMask xs) ← unmarshalBFH `fmap` Get.getWord8
+    bfh@(Bitmask xs) ← unmarshalBFH `fmap` Get.getWord8
     mPTS ← if PTS ∈ xs
                 then Just `fmap` Get.getWord32le
                 else return Nothing

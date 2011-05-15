@@ -60,6 +60,7 @@ library
 
   other-modules: Utils
                , ExtraUtils
+               , System.USB.UVC.Unsafe
 
   include-dirs: include
 
@@ -82,6 +83,7 @@ executable test
                , System.USB.UVC
                , Utils
                , ExtraUtils
+               , System.USB.UVC.Unsafe
 
   include-dirs: include
 
@@ -106,6 +108,7 @@ executable bmp
                , System.USB.UVC
                , Utils
                , ExtraUtils
+               , System.USB.UVC.Unsafe
                , Codec.UVC.RGBA
 
   include-dirs: include

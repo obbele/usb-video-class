@@ -17,6 +17,8 @@ module System.USB.UVC.Descriptors
     , FrameIndex
     , FrameInterval
     , GUID(..)
+    , Bitmask(..)
+    , BitmaskTable
 
     -- * VideoStreaming Interface Descriptors
     --, extractVideoStreamDesc
@@ -59,8 +61,8 @@ import qualified Data.Serialize.Get as Get
 -- Private libraries.
 #include <uvc.h>
 import Utils                 ( bits, genToEnum )
-import ExtraUtils            ( unmarshalBitmask, BitMask(..), BitMaskTable
-                             , getUSBString )
+import ExtraUtils            ( getUSBString )
+import System.USB.UVC.Unsafe ( unmarshalBitmask, Bitmask(..), BitmaskTable )
 
 -- Third parties.
 import System.USB
@@ -212,7 +214,7 @@ instance Show VideoDevice where
         ppunit   = \p → printf " ----- ProcessingUnit[%d]\n\\
                                \%s"
                                (puId p)
-                               (concatMap puctrl ∘ unBitMask ∘ puControls $ p)
+                               (concatMap puctrl ∘ unBitmask ∘ puControls $ p)
         puctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing the camera terminal.
@@ -223,7 +225,7 @@ instance Show VideoDevice where
         pcamera  = \c → printf " ----- CameraTerminal[%d]\n\\
                                \%s"
                                (ctId c)
-                               (concatMap pcctrl ∘ unBitMask ∘ ctControls $ c)
+                               (concatMap pcctrl ∘ unBitmask ∘ ctControls $ c)
         pcctrl   = \c → " --------- " ⧺ (show c) ⧺ "\n"
 
         -- Pretty printing extension units.
@@ -258,7 +260,7 @@ instance Show VideoDevice where
                                (fFormatIndex f)
                                (show $ fFormat f)
                                (fBitsPerPixel f)
-                               (show ∘ unBitMask $ fInterlaceFlags f)
+                               (show ∘ unBitmask $ fInterlaceFlags f)
                                (fFrames f ≫= pframe)
                                (sframe $ fStillImageFrame f)
                                (colors $ fColors f)
@@ -475,8 +477,8 @@ data ComponentDescriptor
        { puId                      ∷ !ComponentID
        , puSourceID                ∷ !ComponentID
        , puMaxMultiplier           ∷ !Int
-       , puControls                ∷ !(BitMask ProcessingControl)
-       , puVideoStandards          ∷ !(BitMask VideoStandard)
+       , puControls                ∷ !(Bitmask ProcessingControl)
+       , puVideoStandards          ∷ !(Bitmask VideoStandard)
        , puProcessing              ∷ !(Maybe StrIx)
        }
    -- | The Extension Unit (XU) is the method provided by this
@@ -504,7 +506,7 @@ data ComponentDescriptor
        , ctObjectiveFocalLengthMin ∷ !Int
        , ctObjectiveFocalLengthMax ∷ !Int
        , ctOcularFocalLength       ∷ !Int
-       , ctControls                ∷ !(BitMask CameraControl)
+       , ctControls                ∷ !(Bitmask CameraControl)
        }
    -- | The Input Terminal (IT) is used as an interface between the
    -- video function\’s \"outside world\" and other Units inside the
@@ -589,7 +591,7 @@ data CameraControl
    | CameraFocusAuto
    deriving (Eq, Show, Data, Typeable)
 
-camera_control_bitmask ∷ BitMaskTable CameraControl
+camera_control_bitmask ∷ BitmaskTable CameraControl
 camera_control_bitmask =
    [ (0,  CameraScanningMode)
    , (1,  CameraAutoExposureMode)
@@ -609,7 +611,7 @@ camera_control_bitmask =
    , (17, CameraFocusAuto)
    ]
 
-unmarshalCameraControl ∷ Bits α ⇒ α → BitMask CameraControl
+unmarshalCameraControl ∷ Bits α ⇒ α → Bitmask CameraControl
 unmarshalCameraControl = unmarshalBitmask camera_control_bitmask
 
 data ProcessingControl
@@ -633,7 +635,7 @@ data ProcessingControl
    | ControlAnalogVideoLockStatus
    deriving (Eq, Show, Data, Typeable)
 
-processing_control_bitmask ∷ BitMaskTable ProcessingControl
+processing_control_bitmask ∷ BitmaskTable ProcessingControl
 processing_control_bitmask =
     [ (0,  ControlBrightness)
     , (1,  ControlContrast)
@@ -655,7 +657,7 @@ processing_control_bitmask =
     , (17, ControlAnalogVideoLockStatus)
     ]
 
-unmarshalProcessingControls ∷ Bits α ⇒ α → BitMask ProcessingControl
+unmarshalProcessingControls ∷ Bits α ⇒ α → Bitmask ProcessingControl
 unmarshalProcessingControls = unmarshalBitmask processing_control_bitmask
 
 data VideoStandard
@@ -667,7 +669,7 @@ data VideoStandard
    | VideoPAL_525_60
    deriving (Eq, Show, Data, Typeable)
 
-video_standards_bitmask ∷ BitMaskTable VideoStandard
+video_standards_bitmask ∷ BitmaskTable VideoStandard
 video_standards_bitmask =
     [ (0, VideoNone)
     , (1, VideoNTSC_525_60)
@@ -677,7 +679,7 @@ video_standards_bitmask =
     , (5, VideoPAL_525_60)
     ]
 
-unmarshalVideoStandards ∷ Bits α ⇒ α → BitMask VideoStandard
+unmarshalVideoStandards ∷ Bits α ⇒ α → Bitmask VideoStandard
 unmarshalVideoStandards = unmarshalBitmask video_standards_bitmask
 
 -- | Read the extra information of the video control interface
@@ -840,7 +842,7 @@ parseProcessingUnit size =
                             then unmarshalVideoStandards `fmap` Get.getWord8
                               -- the UVC standard 1.0a did not define
                               -- this field. Ignoring it.
-                            else return (BitMask [])
+                            else return (Bitmask [])
 
     return $ ProcessingUnit
            { puId             = bUnitID
@@ -890,7 +892,7 @@ parseExtensionUnit size =
 -- bulk data endpoint for video, and an optional dedicated bulk endpoint
 -- for still images related to the video (only for method 3 of still
 -- image transfer. See section 2.4.2.4 "Still Image Capture"). This
--- construction guarantees a one-to- one relationship between the
+-- construction guarantees a one-to-one relationship between the
 -- VideoStreaming interface and the single data stream related to the
 -- endpoint.
 --
@@ -906,7 +908,7 @@ data StreamingInterface
    = InputInterface
            { vsiEndpointAddress        ∷ !EndpointAddress
            , vsiTerminalLink           ∷ !ComponentID
-           , iiInfo                    ∷ !(BitMask StreamingCapability)
+           , iiInfo                    ∷ !(Bitmask StreamingCapability)
            , iiStillCaptureMethod      ∷ !StillCaptureMethod
            , iiTriggerSupport          ∷ !Bool
            , iiTriggerUsage            ∷ !TriggerUsage
@@ -925,7 +927,7 @@ data StreamingInterface
 -- video stream with its specific format.
 data FormatDescriptor
    = UnknownFormatDescriptor
-           { fControls                 ∷ !(BitMask StreamingControl)
+           { fControls                 ∷ !(Bitmask StreamingControl)
            , fFormatIndex              ∷ !FormatIndex
            , fName                     ∷ !String
            , fFrames                   ∷ [FrameDescriptor]
@@ -933,14 +935,14 @@ data FormatDescriptor
            , fColors                   ∷ Maybe ColorMatching
            }
    | FormatUncompressed
-           { fControls                 ∷ !(BitMask StreamingControl)
+           { fControls                 ∷ !(Bitmask StreamingControl)
            , fFormatIndex              ∷ !FormatIndex
            , fFormat                   ∷ !CompressionFormat
            , fBitsPerPixel             ∷ !Int
            , fDefaultFrameIndex        ∷ !FrameIndex
            , fAspectRatioX             ∷ !Int
            , fAspectRatioY             ∷ !Int
-           , fInterlaceFlags           ∷ !(BitMask InterlaceFlag)
+           , fInterlaceFlags           ∷ !(Bitmask InterlaceFlag)
            , fCopyProtect              ∷ !Bool
            , fFrames                   ∷ [FrameDescriptor]
            , fStillImageFrame          ∷ Maybe StillImageFrame
@@ -1017,12 +1019,12 @@ data StreamingCapability
    = DynamicFormatChangeSupported
    deriving (Eq, Show, Data, Typeable)
 
-vs_capability_bitmask ∷ BitMaskTable StreamingCapability
+vs_capability_bitmask ∷ BitmaskTable StreamingCapability
 vs_capability_bitmask =
    [ (0,  DynamicFormatChangeSupported)
    ]
 
-unmarshalStreamingCapability ∷ Bits α ⇒ α → BitMask StreamingCapability
+unmarshalStreamingCapability ∷ Bits α ⇒ α → Bitmask StreamingCapability
 unmarshalStreamingCapability = unmarshalBitmask vs_capability_bitmask
 
 unmarshalTriggerSupport ∷ Word8 → Bool
@@ -1051,7 +1053,7 @@ data StreamingControl
    | UpdateFrameSegment
    deriving (Eq, Show, Data, Typeable)
 
-vs_control_bitmask ∷ BitMaskTable StreamingControl
+vs_control_bitmask ∷ BitmaskTable StreamingControl
 vs_control_bitmask =
     [ (0, Keyframerate)
     , (1, PFramerate)
@@ -1061,7 +1063,7 @@ vs_control_bitmask =
     , (5, UpdateFrameSegment)
     ]
 
-unmarshalStreamingControl ∷ Bits α ⇒ α → BitMask StreamingControl
+unmarshalStreamingControl ∷ Bits α ⇒ α → Bitmask StreamingControl
 unmarshalStreamingControl = unmarshalBitmask vs_control_bitmask
 
 data CompressionFormat
@@ -1089,8 +1091,8 @@ data InterlaceFlag
    deriving (Eq, Show, Data, Typeable)
 
 -- On the road [to bitmask parsing] again, yehaaa ... wait no ;(
-unmarshalInterlaceFlags ∷ Word8 → BitMask InterlaceFlag
-unmarshalInterlaceFlags value = BitMask $ catMaybes [ testInterlaced
+unmarshalInterlaceFlags ∷ Word8 → Bitmask InterlaceFlag
+unmarshalInterlaceFlags value = Bitmask $ catMaybes [ testInterlaced
                                                     , testFieldsPerFrame
                                                     , testField1First
                                                     , testFieldPattern
@@ -1264,7 +1266,7 @@ parseVSOutputHeader size total_size nformats = boundParser total_size $ do
   bmaControls ← if (size ≤ 2) -- only in UVC v1.1
      then do -- skip remaining descriptor bytes.
              Get.skip (size - 2)
-             return $ replicate nformats (BitMask [])
+             return $ replicate nformats (Bitmask [])
 
      else do bControlSize ← fromIntegral `fmap` Get.getWord8
              xs ← replicateM nformats $ do
@@ -1286,7 +1288,7 @@ parseVSOutputHeader size total_size nformats = boundParser total_size $ do
 
 -- | Begin to read a Video Streaming Descriptor and dispatch to the
 -- right specialised parser.
-parseFormatDescriptors ∷ BitMask StreamingControl → Get.Get FormatDescriptor
+parseFormatDescriptors ∷ Bitmask StreamingControl → Get.Get FormatDescriptor
 parseFormatDescriptors ctrl = do
     bLength ← fromIntegral `fmap` Get.getWord8
     bDescriptorType ← Get.getWord8
@@ -1309,7 +1311,7 @@ parseFormatDescriptors ctrl = do
           VS_FORMAT_STREAM_BASED → fallback "FORMAT_STREAM_BASED"
           _ → fallback $ "FORMAT_(" ⧺ show bDescriptorSubType ⧺ ")"
 
-parseVSUnknownFormat ∷ String → BitMask StreamingControl → Int → Get.Get FormatDescriptor
+parseVSUnknownFormat ∷ String → Bitmask StreamingControl → Int → Get.Get FormatDescriptor
 parseVSUnknownFormat name ctrl size = do
     bFormatIndex ← Get.getWord8
     bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8
@@ -1322,7 +1324,7 @@ parseVSUnknownFormat name ctrl size = do
 
 -- | Read Uncompressed Video Format Descriptors as specified
 -- in USB Video Class 1.0a / Payload_uncompressed, table 3-1.
-parseFormatDescriptorUncompressed ∷ BitMask StreamingControl → Int → Get.Get FormatDescriptor
+parseFormatDescriptorUncompressed ∷ Bitmask StreamingControl → Int → Get.Get FormatDescriptor
 parseFormatDescriptorUncompressed ctrl size = do
     bFormatIndex ← Get.getWord8
     bNumFrameDescriptors ← fromIntegral `fmap` Get.getWord8

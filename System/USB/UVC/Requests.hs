@@ -33,8 +33,7 @@ import qualified Data.Serialize.Put as Put
 #include <uvc.h>
 import System.USB.UVC.Descriptors
 import Utils                 ( genFromEnum )
-import ExtraUtils            ( unmarshalBitmask, marshalBitmask
-                             , BitMask(..), BitMaskTable )
+import System.USB.UVC.Unsafe ( unmarshalBitmask, marshalBitmask )
 
 -- Third parties.
 import System.USB
@@ -141,7 +140,7 @@ customProbeCommitControl video idx =
               $ video
 
     in ProbeCommitControl
-        { pcHint                   = BitMask [HintFrameInterval]
+        { pcHint                   = Bitmask [HintFrameInterval]
         , pcFormatIndex            = fFormatIndex format
         , pcFrameIndex             = fFrameIndex frame
         , pcFrameInterval          = fDefaultFrameInterval frame
@@ -256,7 +255,7 @@ negotiatePCControl video devh ctrl0 = do
 -- See UVC specifications 1.0a, Section 4.3.1.1 and Table 4-46.
 
 data ProbeCommitControl = ProbeCommitControl
-    { pcHint                   ∷ !(BitMask ProbeHint)
+    { pcHint                   ∷ !(Bitmask ProbeHint)
     , pcFormatIndex            ∷ !FormatIndex
     , pcFrameIndex             ∷ !FrameIndex
     , pcFrameInterval          ∷ !FrameInterval
@@ -277,7 +276,7 @@ data ProbeHint
    | HintCompWindowSize
    deriving (Eq, Show, Data, Typeable)
 
-probe_hint_bitmask ∷ BitMaskTable ProbeHint
+probe_hint_bitmask ∷ BitmaskTable ProbeHint
 probe_hint_bitmask =
    [ (0,  HintFrameInterval)
    , (1,  HintKeyFrameRate)
@@ -286,10 +285,10 @@ probe_hint_bitmask =
    , (4,  HintCompWindowSize)
    ]
 
-unmarshalProbeHint ∷ Bits α ⇒ α → BitMask ProbeHint
+unmarshalProbeHint ∷ Bits α ⇒ α → Bitmask ProbeHint
 unmarshalProbeHint = unmarshalBitmask probe_hint_bitmask
 
-marshalProbeHint ∷ BitMask ProbeHint → Word16
+marshalProbeHint ∷ Bitmask ProbeHint → Word16
 marshalProbeHint = marshalBitmask probe_hint_bitmask
 
 extractPCControl ∷ ReleaseNumber → B.ByteString → Maybe ProbeCommitControl
