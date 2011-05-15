@@ -19,6 +19,11 @@ Run `./test_video.sh` to store on the disk and display with gst-launch
 or ffplay (tools from gstreamer-tools or FFMPEG) a raw YUY2 video
 stream.
 
+Run `./test_iter.sh` to store on the disk and display with gst-launch or
+ffplay (tools from gstreamer-tools or FFMPEG) a raw YUY2 video stream.
+This program is based on usb-iteratee and you must compile with the
+`Iteratee` flag to test it.
+
 You can also directly run `./dist/build/test/test (--help)` to try with
 different video frames. The resulting raw video file (typically
 `/tmp/uvc\_x\_y.yuy2`) should be readable with the `read_video.sh`

@@ -36,6 +36,10 @@ Flag Test
   description: Build the test program
   default:     True
 
+Flag Iteratee
+  description: Build the iteratee-test program
+  default:     False
+
 Flag BMP
   description: Build the BMP test program
   default:     False
@@ -84,6 +88,35 @@ executable test
                , System.USB.UVC.DeviceHandling
                , System.USB.UVC.Requests
                , System.USB.UVC.Streaming
+               , System.USB.UVC
+               , System.USB.UVC.Unsafe
+               , ExtraUtils
+               , Utils
+               , Demo.Common
+
+  include-dirs: include
+
+executable iteratee-test
+  GHC-Options: -Wall
+  GHC-Options: -fno-warn-unused-do-bind
+  GHC-Options: -threaded
+  GHC-Options: -rtsopts
+
+  if flag(Iteratee)
+      Buildable: True
+  else
+      Buildable: False
+
+  build-depends: transformers >= 0.2
+               , iteratee >= 0.8
+               , usb-iteratee >= 0.4
+
+  main-is:       Demo/Iteratee.hs
+  other-modules: System.USB.UVC.Descriptors
+               , System.USB.UVC.DeviceHandling
+               , System.USB.UVC.Requests
+               , System.USB.UVC.Streaming
+               , System.USB.UVC.Iteratee
                , System.USB.UVC
                , System.USB.UVC.Unsafe
                , ExtraUtils
